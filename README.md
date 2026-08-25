@@ -22,9 +22,12 @@ IEDF・符号付きIADF・IAEDFのシミュレーションを実行・閲覧・�
 ```bash
 cd app
 BKM_ADMIN_PASSWORD='任意の管理者パスワード' docker compose up -d --build
+
+# ポートが埋まっている場合は BKM_PORT で公開ポートを変更できる
+BKM_PORT=8010 BKM_ADMIN_PASSWORD='...' docker compose up -d --build
 ```
 
-- LAN内のブラウザから `http://<サーバーIP>:8000/` へアクセス
+- LAN内のブラウザから `http://<サーバーIP>:8000/`（`BKM_PORT`指定時はそのポート）へアクセス
 - 計算結果は `./storage/results`、DBは `./storage/db` に永続化される
 - 同時実行ジョブ数は `BKM_MAX_WORKERS`（既定2）で調整
 - ファイアウォールでポート8000のLAN内許可が必要な場合がある

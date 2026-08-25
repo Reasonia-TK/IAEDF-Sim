@@ -3,7 +3,8 @@ services:
     build: .
     container_name: bkm-simulator
     ports:
-      - "8000:8000"
+      # 公開ポートはBKM_PORTで変更可能（コンテナ内部は8000固定）
+      - "${BKM_PORT:-8000}:8000"
     environment:
       # 管理者パスワード（必須: 未設定だと削除等の管理操作が無効）
       - BKM_ADMIN_PASSWORD=${BKM_ADMIN_PASSWORD:-}
