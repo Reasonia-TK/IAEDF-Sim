@@ -1,0 +1,107 @@
+:root {
+  --bg: #f4f6f9;
+  --card: #ffffff;
+  --border: #d8dee6;
+  --text: #1c2733;
+  --muted: #6b7684;
+  --accent: #1565c0;
+  --accent-dark: #0d47a1;
+  --danger: #c62828;
+  --ok: #2e7d32;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: "Segoe UI", "Hiragino Sans", "Noto Sans JP", Meiryo, sans-serif;
+  font-size: 14px;
+}
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--accent-dark); color: #fff; padding: 10px 20px;
+}
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.header-right { display: flex; gap: 10px; align-items: center; }
+nav#tabs {
+  display: flex; gap: 4px; background: var(--accent-dark); padding: 0 16px;
+}
+nav#tabs button {
+  background: transparent; border: none; color: #cfe0f5; padding: 10px 18px;
+  cursor: pointer; font-size: 14px; border-bottom: 3px solid transparent;
+}
+nav#tabs button.active { color: #fff; border-bottom-color: #ffb300; font-weight: 600; }
+main { max-width: 1240px; margin: 16px auto; padding: 0 16px 60px; }
+.card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 18px; margin-bottom: 14px;
+}
+.card h2 { font-size: 15px; margin: 2px 0 10px; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+input, select {
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px;
+  font-size: 13px; color: var(--text); background: #fff; min-width: 110px;
+}
+input[type="checkbox"] { min-width: auto; width: 16px; height: 16px; }
+button {
+  padding: 7px 16px; border: 1px solid var(--border); border-radius: 5px;
+  background: #fff; cursor: pointer; font-size: 13px; color: var(--text);
+}
+button:hover { background: #eef3f9; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary:hover { background: var(--accent-dark); }
+button.danger { color: var(--danger); border-color: var(--danger); }
+button.ghost { background: transparent; color: #cfe0f5; border-color: #5b83b0; }
+button:disabled { opacity: 0.45; cursor: default; }
+.badge {
+  background: #ffb300; color: #442c00; padding: 3px 10px; border-radius: 12px;
+  font-size: 12px; font-weight: 600;
+}
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.message { min-height: 1em; margin: 6px 0 0; font-size: 13px; }
+.message.error { color: var(--danger); }
+.message.ok { color: var(--ok); }
+
+/* 設定フォーム */
+.config-group { margin-bottom: 10px; }
+.config-group summary {
+  cursor: pointer; font-weight: 600; font-size: 13px; padding: 4px 0;
+}
+.config-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px; padding: 8px 0 4px;
+}
+
+/* テーブル */
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+th { background: #f0f4f8; font-weight: 600; white-space: nowrap; }
+tr:hover td { background: #f7fafd; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.status-chip { padding: 2px 8px; border-radius: 10px; font-size: 12px; white-space: nowrap; }
+.status-done { background: #e2f2e3; color: var(--ok); }
+.status-running { background: #e3edf9; color: var(--accent); }
+.status-queued { background: #f0f0f0; color: var(--muted); }
+.status-error { background: #fbe4e4; color: var(--danger); }
+.status-cancelled { background: #f4ecdc; color: #8a6d1a; }
+
+/* 進捗バー */
+.progress-outer {
+  background: #e6eaf0; border-radius: 6px; height: 14px; width: 220px;
+  overflow: hidden; display: inline-block; vertical-align: middle;
+}
+.progress-inner { background: var(--accent); height: 100%; transition: width 0.5s; }
+
+/* プロット */
+.plot { width: 100%; min-height: 320px; margin-bottom: 8px; }
+.plot-half-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 900px) { .plot-half-wrap { grid-template-columns: 1fr; } }
+pre.config-view {
+  background: #f6f8fa; border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; font-size: 12px; overflow-x: auto; max-height: 380px;
+}
+.validation-ok { color: var(--ok); font-weight: 600; }
+.validation-ng { color: var(--danger); font-weight: 600; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-variant-numeric: tabular-nums; }

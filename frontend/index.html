@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BKM IEDF/IADF Simulator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230d47a1'/%3E%3Cpath d='M2 12 L6 4 L8 10 L10 6 L14 12' stroke='%23ffb300' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="vendor/plotly-cartesian.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>BKM IEDF/IADF Simulator</h1>
+  <div class="header-right">
+    <span id="admin-badge" class="badge hidden">管理者モード</span>
+    <button id="admin-login-btn" class="ghost">管理者ログイン</button>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button data-tab="run" class="active">実行</button>
+  <button data-tab="history">履歴</button>
+  <button data-tab="compare">比較</button>
+</nav>
+
+<main>
+  <!-- ===== 実行タブ ===== -->
+  <section id="tab-run">
+    <div class="card">
+      <div class="row">
+        <label>モデル
+          <select id="model-select">
+            <option value="1d">1D（シースTPMC）</option>
+            <option value="2d">2D（ウェハ+エッジリング）</option>
+          </select>
+        </label>
+        <label>ラベル <input id="job-label" placeholder="例: 20mTorr条件振り"></label>
+        <label>投入者 <input id="job-user" placeholder="名前（任意）"></label>
+        <button id="run-btn" class="primary">実行</button>
+      </div>
+      <p id="run-message" class="message"></p>
+    </div>
+    <div id="config-form"></div>
+    <div class="card">
+      <h2>実行中 / 待機中ジョブ</h2>
+      <div id="active-jobs"><p class="muted">なし</p></div>
+    </div>
+  </section>
+
+  <!-- ===== 履歴タブ ===== -->
+  <section id="tab-history" class="hidden">
+    <div class="card">
+      <div class="row">
+        <label>モデル
+          <select id="filter-model">
+            <option value="">すべて</option>
+            <option value="1d">1D</option>
+            <option value="2d">2D</option>
+          </select>
+        </label>
+        <label>状態
+          <select id="filter-status">
+            <option value="">すべて</option>
+            <option value="done">done</option>
+            <option value="running">running</option>
+            <option value="queued">queued</option>
+            <option value="error">error</option>
+            <option value="cancelled">cancelled</option>
+          </select>
+        </label>
+        <label>検索 <input id="filter-q" placeholder="ラベル / 投入者 / ID"></label>
+        <button id="filter-refresh">更新</button>
+        <button id="compare-selected" disabled>選択を比較 (0)</button>
+      </div>
+      <p id="history-message" class="message"></p>
+      <div id="history-table"></div>
+    </div>
+    <div id="job-detail" class="hidden"></div>
+  </section>
+
+  <!-- ===== 比較タブ ===== -->
+  <section id="tab-compare" class="hidden">
+    <div class="card">
+      <p class="muted">履歴タブで完了ジョブを2件以上選択し「選択を比較」を押してください。</p>
+    </div>
+    <div id="compare-result"></div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
