@@ -1,4 +1,4 @@
-"""2D3V TPMC（LXCat衝突 + 補正電場 + 密度堆積、ノートブックと同一アルゴリズム）。"""
+"""2D3V TPMC v2（非周期・鏡像反射壁、LXCat衝突 + 補正電場 + 密度堆積）。"""
 from __future__ import annotations
 
 import numpy as np
@@ -7,20 +7,34 @@ from ..constants import KB, MTORR_TO_PA, QE
 from ..mc_utils import isotropic_unit_vectors, periodic_table_at_time
 from ..plasma import PlasmaDerived
 from ..schemas import Field2DConfig, GasConfig, GeometryConfig, Tpmc2DConfig
-from .field import is_wafer, surface_height
+from .field import MAT_WAFER, material_of, segment_index_of, surface_height
 
 
 def bilinear(field, x, y, dx, dy, nx, ny):
-    gx = np.mod(x / dx, nx)
-    ix0 = np.floor(gx).astype(np.int64) % nx
-    ix1 = (ix0 + 1) % nx
-    fx = gx - np.floor(gx)
+    gx = np.clip(x / dx, 0.0, nx - 1.001)
+    ix0 = np.floor(gx).astype(np.int64)
+    ix1 = ix0 + 1
+    fx = gx - ix0
     gy = np.clip(y / dy, 0.0, ny - 1.001)
     iy0 = np.floor(gy).astype(np.int64)
     iy1 = iy0 + 1
     fy = gy - iy0
     return ((1 - fx) * (1 - fy) * field[iy0, ix0] + fx * (1 - fy) * field[iy0, ix1]
             + (1 - fx) * fy * field[iy1, ix0] + fx * fy * field[iy1, ix1])
+
+
+def _reflect_walls(xt, vx, length):
+    """鏡像対称壁での鏡面反射（面内をはみ出した分を折り返す）。"""
+    left = xt < 0.0
+    if np.any(left):
+        xt[left] = -xt[left]
+        vx[left] = -vx[left]
+    right = xt > length
+    if np.any(right):
+        xt[right] = 2.0 * length - xt[right]
+        vx[right] = -vx[right]
+    np.clip(xt, 0.0, length, out=xt)
+    return xt, vx
 
 
 def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
@@ -32,14 +46,15 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
     field2d = basis["plasma"]
     nx, ny = int(f2d.nx), int(f2d.ny)
     dx, dy = field2d["dx"], field2d["dy"]
-    length = geo.periodic_length_m
+    length = geo.domain_length_m
     rf_period = derived.rf_period
     dt = rf_period / tpmc.steps_per_rf_period
     max_steps = int(tpmc.max_rf_periods * tpmc.steps_per_rf_period)
     gas_density = pressure_mTorr * MTORR_TO_PA / (KB * gas.gas_temperature_K)
     neutral_sigma = np.sqrt(KB * gas.gas_temperature_K / derived.ion_mass)
     ion_sigma = np.sqrt(QE * tpmc.ion_temperature_eV / derived.ion_mass)
-    h_slope = min(dx * 0.2, geo.step_smoothing_width_m * 0.1)
+    h_slope = min(dx * 0.2,
+                  geo.smoothing_m * 0.1 if geo.smoothing_m > 0 else dx * 0.2)
     bohm_speed = derived.bohm_speed
 
     gid = np.arange(n_particles)
@@ -55,7 +70,8 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
     energy = np.full(n_particles, np.nan)
     angle = np.full(n_particles, np.nan)
     impact_x = np.full(n_particles, np.nan)
-    on_wafer = np.zeros(n_particles, dtype=bool)
+    impact_segment = np.full(n_particles, -1, dtype=np.int32)
+    impact_material = np.full(n_particles, -1, dtype=np.int8)
     deposit = np.zeros((ny, nx)) if collect_density else None
     max_p_collision = 0.0
 
@@ -76,7 +92,7 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
             ex = ex + bilinear(correction["Ex"], x, y, dx, dy, nx, ny)
             ey = ey + bilinear(correction["Ey"], x, y, dx, dy, nx, ny)
         if collect_density:
-            ix = np.floor(x / dx).astype(np.int64) % nx
+            ix = np.clip(np.floor(x / dx).astype(np.int64), 0, nx - 1)
             iy = np.clip(np.floor(y / dy).astype(np.int64), 0, ny - 1)
             np.add.at(deposit, (iy, ix), dt)
         vx += QE * ex / derived.ion_mass * dt
@@ -110,6 +126,7 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
 
         xt = x + vx * dt
         yt = y + vy * dt
+        xt, vx = _reflect_walls(xt, vx, length)
         d0 = y - surface_height(x, geo)
         d1 = yt - surface_height(xt, geo)
         hit = d1 <= 0.0
@@ -117,7 +134,7 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
         if np.any(hit):
             gi = gid[hit]
             frac = np.clip(d0[hit] / np.maximum(d0[hit] - d1[hit], 1e-30), 0.0, 1.0)
-            xh = np.mod(x[hit] + frac * (xt[hit] - x[hit]), length)
+            xh = np.clip(x[hit] + frac * (xt[hit] - x[hit]), 0.0, length)
             slope = (surface_height(xh + h_slope, geo)
                      - surface_height(xh - h_slope, geo)) / (2 * h_slope)
             norm = np.sqrt(1.0 + slope * slope)
@@ -127,10 +144,11 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
                 * (vx[hit]**2 + vy[hit]**2 + vz[hit]**2) / QE
             angle[gi] = np.degrees(np.arctan2(vt, np.abs(vn)))
             impact_x[gi] = xh
-            on_wafer[gi] = is_wafer(xh, geo)
+            impact_segment[gi] = segment_index_of(xh, geo)
+            impact_material[gi] = material_of(xh, geo)
         keep = ~(hit | back)
         gid = gid[keep]
-        x = np.mod(xt[keep], length)
+        x = xt[keep]
         y = yt[keep]
         vx, vy, vz = vx[keep], vy[keep], vz[keep]
         elapsed = elapsed[keep] + dt
@@ -140,10 +158,13 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
 
     ok = np.isfinite(energy)
     out = {"energy_eV": energy[ok], "angle_deg": angle[ok],
-           "impact_x_m": impact_x[ok], "on_wafer": on_wafer[ok],
+           "impact_x_m": impact_x[ok],
+           "impact_segment": impact_segment[ok],
+           "impact_material": impact_material[ok],
+           "on_wafer": impact_material[ok] == MAT_WAFER,
            "n_lost": int(np.sum(~ok)), "max_p_collision": max_p_collision}
     if collect_density:
-        weight = derived.n_s * bohm_speed * geo.periodic_length_m / n_particles
+        weight = derived.n_s * bohm_speed * length / n_particles
         out["ion_density_m3"] = deposit * weight / (dx * dy)
     if progress_cb is not None:
         progress_cb(1.0)

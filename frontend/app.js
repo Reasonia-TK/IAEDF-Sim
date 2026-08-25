@@ -32,8 +32,13 @@ const GROUP_LABELS = {
 const ENUMS = {
   "sheath.model": ["moving_front", "static_width"],
   "gas.cross_section_source": ["lxcat_phelps", "approximation"],
-  "geometry.surface_mode": ["step", "profile"],
   x_axis: ["time_s", "time_ns", "time_us", "phase_deg", "phase_rad"],
+};
+
+const MATERIAL_META = {
+  wafer: { label: "ウェハ", color: "#1565c0" },
+  ring: { label: "リング", color: "#e65100" },
+  insulator: { label: "絶縁", color: "#7c8796" },
 };
 
 const OPEN_GROUPS = new Set(["waveform", "wafer_waveform", "ring_waveform",
@@ -87,12 +92,8 @@ const LABELS = {
   wafer_to_ground_area_ratio: ["ウェハ/接地 面積比", ""],
   ring_to_ground_area_ratio: ["リング/接地 面積比", ""],
   ground_voltage_V: ["接地電位 [V]", ""],
-  periodic_length_m: ["周期長 [m]", "x方向周期境界の長さ"],
-  wafer_left_m: ["ウェハ左端 [m]", ""],
-  wafer_right_m: ["ウェハ右端 [m]", ""],
-  wafer_height_m: ["ウェハ高さ [m]", ""],
-  ring_height_m: ["リング高さ [m]", "ウェハより低いと消耗リング相当"],
-  step_smoothing_width_m: ["段差平滑化幅 [m]", "tanh遷移の幅"],
+  domain_length_m: ["領域長 [m]", "左右壁は鏡像対称境界（粒子は鏡面反射）"],
+  smoothing_m: ["表面平滑化幅 [m]", "折れ線表面を滑らかにする（0=無効）"],
   top_clearance_factor: ["上端クリアランス係数", "シース幅スケールに対する余裕"],
   nx: ["格子数 nx", ""],
   ny: ["格子数 ny", ""],
@@ -109,8 +110,6 @@ const LABELS = {
   max_abs_correction_V: ["補正上限 [V]", ""],
   poisson_tolerance_V: ["Poisson収束判定 [V]", ""],
   poisson_max_iterations: ["Poisson最大反復", ""],
-  surface_mode: ["表面モード", "step=段差（従来） / profile=制御点スケッチ"],
-  profile_smoothing_m: ["表面平滑化幅 [m]", "profileモードの折れ線を滑らかにする（0=無効）"],
   edge_exclusion_m: ["端除外幅 [m]", "統計から除くウェハ最端部"],
   edge_band_m: ["端帯域幅 [m]", "端傾き平均を取る帯"],
   bin_width_m: ["距離ビン幅 [m]", ""],
@@ -276,18 +275,22 @@ function buildForm() {
           <label>プリセット
             <select id="geo-preset">
               <option value="">選択して適用...</option>
-              <option value="from_step">段差（現在のstep設定から生成）</option>
+              <option value="step">標準（ウェハ+リング段差）</option>
               <option value="taper">テーパーリング</option>
               <option value="recess">リセスウェハ</option>
-              <option value="groove">溝付きリング</option>
               <option value="patent_ring">特許型エッジリング（片側: ギャップ+傾斜+高リング）</option>
+              <option value="insulator_cover">絶縁カバー付きリング</option>
             </select>
           </label>
-          <span class="muted" id="geo-hint"></span>
+          <span id="geo-seg-tools" class="row" style="gap:6px"></span>
         </div>
+        <p class="muted" style="margin:2px 0 4px" id="geo-hint">
+          セグメント（線分）をクリックして材質を選択 / 点ドラッグで移動 /
+          曲線上ダブルクリックで点追加 / 点を右クリックで削除。左右の壁は鏡像対称境界。
+        </p>
         <div id="geo-editor"></div>
-        <details style="margin-top:6px"><summary class="muted">制御点を数値で編集（x_mm, y_mm を1行に1点）</summary>
-          <textarea id="geo-points-text" rows="6" style="width:100%;font-family:monospace;font-size:12px"></textarea>
+        <details style="margin-top:6px"><summary class="muted">数値で編集（x_mm, y_mm, 次セグメントの材質 を1行に1点）</summary>
+          <textarea id="geo-points-text" rows="7" style="width:100%;font-family:monospace;font-size:12px"></textarea>
         </details>`;
     }
     const card = document.createElement("div");
@@ -297,9 +300,16 @@ function buildForm() {
     container.appendChild(card);
   }
   if (state.model === "2d") {
-    const preset = config.geometry && config.geometry.profile_points_m;
-    state.profilePoints = (preset && preset.length >= 3)
-      ? preset.map((p) => [p[0], p[1]]) : null;
+    const geo = config.geometry || {};
+    if (geo.points_m && geo.points_m.length >= 2 && geo.segment_materials
+        && geo.segment_materials.length === geo.points_m.length - 1) {
+      state.geoPoints = geo.points_m.map((p) => [p[0], p[1]]);
+      state.geoMaterials = [...geo.segment_materials];
+    } else {
+      state.geoPoints = null;
+      state.geoMaterials = null;
+    }
+    state.selectedSegment = null;
     renderGeometryEditor();
     syncGeoTextarea();
   }
@@ -379,231 +389,254 @@ async function previewWaveform(group) {
   }
 }
 
-// ---------------- 2Dスケッチエディタ（表面プロファイル） ----------------
+// ---------------- 2Dスケッチエディタv2（セグメント材質指定・鏡像壁） ----------------
 
-function readGeo() {
+function readGeoScalar(key) {
   const defaults = state.defaults["2d"].geometry;
-  const geo = {};
-  for (const key of Object.keys(defaults)) {
-    if (key === "profile_points_m") continue;
-    try {
-      geo[key] = readField("geometry", key, defaults[key]);
-    } catch (_error) {
-      geo[key] = defaults[key];
-    }
+  try {
+    return readField("geometry", key, defaults[key]);
+  } catch (_error) {
+    return defaults[key];
   }
-  return geo;
 }
 
-function currentSurfaceMode() {
-  const node = document.getElementById(inputId("geometry", "surface_mode"));
-  return node ? node.value : "step";
+function ensureGeoState() {
+  const defaults = state.defaults["2d"].geometry;
+  if (!state.geoPoints || state.geoPoints.length < 2
+      || !state.geoMaterials
+      || state.geoMaterials.length !== state.geoPoints.length - 1) {
+    state.geoPoints = defaults.points_m.map((p) => [p[0], p[1]]);
+    state.geoMaterials = [...defaults.segment_materials];
+  }
 }
 
-function defaultProfilePoints(geo) {
-  const w = Math.max(geo.step_smoothing_width_m, 0.05e-3);
-  return [
-    [0.0, geo.ring_height_m],
-    [geo.wafer_left_m - w, geo.ring_height_m],
-    [geo.wafer_left_m + w, geo.wafer_height_m],
-    [geo.wafer_right_m - w, geo.wafer_height_m],
-    [geo.wafer_right_m + w, geo.ring_height_m],
-  ];
-}
-
-// バックエンドと同じ表面計算（step: tanh / profile: 周期線形補間+ガウス平滑）
-function surfaceDense(geo, mode, points, n = 480) {
-  const L = geo.periodic_length_m;
-  const xs = Array.from({ length: n }, (_v, i) => L * i / n);
-  let ys;
-  if (mode === "profile" && points.length >= 3) {
-    const sorted = [...points].sort((a, b) => a[0] - b[0]);
-    const px = sorted.map((p) => p[0]).concat([sorted[0][0] + L]);
-    const py = sorted.map((p) => p[1]).concat([sorted[0][1]]);
-    const interp = (x) => {
-      let q = x % L;
-      if (q < px[0]) q += L;
-      let i = 0;
-      while (i < px.length - 2 && px[i + 1] < q) i++;
-      const t = (q - px[i]) / Math.max(px[i + 1] - px[i], 1e-12);
-      return py[i] + t * (py[i + 1] - py[i]);
-    };
-    ys = xs.map(interp);
-    if (geo.profile_smoothing_m > 0) {
-      const sigma = geo.profile_smoothing_m / (L / n);
-      const half = Math.min(Math.ceil(4 * sigma), n >> 1);
-      const kernel = [];
-      let sum = 0;
-      for (let k = -half; k <= half; k++) {
-        const v = Math.exp(-0.5 * (k / sigma) ** 2);
-        kernel.push(v);
-        sum += v;
-      }
-      ys = ys.map((_v, i) => kernel.reduce((acc, kv, j) =>
-        acc + kv * ys[(i + j - half + n) % n], 0) / sum);
+// 非周期の表面計算（バックエンドと同一: クランプ線形補間+鏡像パディング平滑化）
+function surfaceDenseV2(points, smoothing, length, n = 480) {
+  const sorted = [...points].sort((a, b) => a[0] - b[0]);
+  const px = sorted.map((p) => p[0]);
+  const py = sorted.map((p) => p[1]);
+  const interp = (x) => {
+    const q = Math.min(Math.max(x, px[0]), px[px.length - 1]);
+    let i = 0;
+    while (i < px.length - 2 && px[i + 1] < q) i++;
+    const t = (q - px[i]) / Math.max(px[i + 1] - px[i], 1e-12);
+    return py[i] + t * (py[i + 1] - py[i]);
+  };
+  const xs = Array.from({ length: n }, (_v, i) => length * i / (n - 1));
+  let ys = xs.map(interp);
+  if (smoothing > 0) {
+    const sigma = smoothing / (length / (n - 1));
+    const half = Math.min(Math.ceil(4 * sigma), n >> 1);
+    const kernel = [];
+    let sum = 0;
+    for (let k = -half; k <= half; k++) {
+      const v = Math.exp(-0.5 * (k / sigma) ** 2);
+      kernel.push(v);
+      sum += v;
     }
-  } else {
-    const width = Math.max(geo.step_smoothing_width_m, 1e-12);
-    ys = xs.map((x) => geo.ring_height_m
-      + (geo.wafer_height_m - geo.ring_height_m) * 0.5
-      * (Math.tanh((x - geo.wafer_left_m) / width)
-         - Math.tanh((x - geo.wafer_right_m) / width)));
+    const mirror = (i) => {
+      if (i < 0) return -i;
+      if (i >= n) return 2 * (n - 1) - i;
+      return i;
+    };
+    ys = ys.map((_v, i) => kernel.reduce((acc, kv, j) =>
+      acc + kv * ys[mirror(i + j - half)], 0) / sum);
   }
   return { xs, ys };
 }
 
 function syncGeoTextarea() {
   const area = document.getElementById("geo-points-text");
-  if (!area || !state.profilePoints) return;
-  area.value = state.profilePoints
-    .map((p) => `${(p[0] * 1e3).toFixed(3)}, ${(p[1] * 1e3).toFixed(3)}`)
-    .join("\n");
+  if (!area || !state.geoPoints) return;
+  area.value = state.geoPoints.map((p, i) => {
+    const base = `${(p[0] * 1e3).toFixed(3)}, ${(p[1] * 1e3).toFixed(3)}`;
+    return i < state.geoMaterials.length
+      ? `${base}, ${state.geoMaterials[i]}` : base;
+  }).join("\n");
 }
 
 function parseGeoTextarea() {
   const area = document.getElementById("geo-points-text");
   if (!area) return;
-  const points = area.value.split("\n").map((line) =>
-    line.split(",").map((s) => parseFloat(s.trim()) * 1e-3))
-    .filter((p) => p.length === 2 && p.every(Number.isFinite));
-  if (points.length >= 3) {
-    state.profilePoints = points;
+  const points = [];
+  const materials = [];
+  for (const line of area.value.split("\n")) {
+    const parts = line.split(",").map((s) => s.trim());
+    if (parts.length < 2) continue;
+    const x = parseFloat(parts[0]) * 1e-3;
+    const y = parseFloat(parts[1]) * 1e-3;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    points.push([x, y]);
+    if (parts[2] && MATERIAL_META[parts[2]]) materials.push(parts[2]);
+    else materials.push("ring");
+  }
+  if (points.length >= 2) {
+    materials.pop();   // 最終行の材質は使わない
+    while (materials.length < points.length - 1) materials.push("ring");
+    state.geoPoints = points;
+    state.geoMaterials = materials.slice(0, points.length - 1);
+    state.selectedSegment = null;
     renderGeometryEditor();
   }
 }
 
 function applyGeoPreset(name) {
-  const geo = readGeo();
-  const L = geo.periodic_length_m;
-  const w = Math.max(geo.step_smoothing_width_m, 0.05e-3);
-  const wafer = geo.wafer_height_m, ring = geo.ring_height_m;
-  const left = geo.wafer_left_m, right = geo.wafer_right_m;
+  const L = readGeoScalar("domain_length_m");
+  const wafer = 0.45e-3, ring = 0.25e-3;
   const presets = {
-    from_step: defaultProfilePoints(geo),
-    taper: [[0.0, ring], [left, wafer], [right, wafer],
-            [right + 0.15 * (L - right), ring]],
-    recess: [[0.0, Math.max(wafer, ring)],
-             [left - w, Math.max(wafer, ring)],
-             [left + w, Math.max(wafer, ring) * 0.55],
-             [right - w, Math.max(wafer, ring) * 0.55],
-             [right + w, Math.max(wafer, ring)]],
-    groove: [[0.0, ring], [0.35 * left, ring], [0.5 * left, ring * 0.35],
-             [0.65 * left, ring], [left - w, ring], [left + w, wafer],
-             [right - w, wafer], [right + w, ring],
-             [right + 0.35 * (L - right), ring],
-             [right + 0.5 * (L - right), ring * 0.35],
-             [right + 0.65 * (L - right), ring]],
-    // 特許型(片側): 左=ウェハ→狭ギャップ310→傾斜281(ウェハ面下から)→
-    // 高いリング上面280→外周小段差。特許図US2011/0126984と同じ片側配置
+    step: {
+      points: [[0, ring], [2.9e-3, ring], [3.1e-3, wafer],
+               [L - 3.1e-3, wafer], [L - 2.9e-3, ring], [L, ring]],
+      materials: ["ring", "wafer", "wafer", "wafer", "ring"],
+    },
+    taper: {
+      points: [[0, ring], [2.0e-3, ring], [3.0e-3, wafer],
+               [L - 3.0e-3, wafer], [L - 2.0e-3, ring], [L, ring]],
+      materials: ["ring", "ring", "wafer", "ring", "ring"],
+    },
+    recess: {
+      points: [[0, wafer], [2.9e-3, wafer], [3.1e-3, 0.55 * wafer],
+               [L - 3.1e-3, 0.55 * wafer], [L - 2.9e-3, wafer], [L, wafer]],
+      materials: ["ring", "wafer", "wafer", "wafer", "ring"],
+    },
+    // 特許型(片側): 左壁=ウェハ対称。ウェハ→ギャップ310→傾斜281→高リング280→外周段差
     patent_ring: (() => {
-      const ringTop = ring > wafer ? ring : wafer + 0.20e-3;
-      const gapW = 0.25e-3;          // ギャップ(310)の幅
-      const gapDepth = 0.33 * wafer; // ギャップ底の高さ
-      const rampL = 0.75e-3;         // 傾斜(281)の長さ
-      const lipY = wafer * 0.90;     // 傾斜内端(ウェハ面よりわずかに下)
-      const stepY = ringTop - 0.10e-3;  // 外周段差の高さ
-      const stepW = 0.60e-3;         // 外周段差の幅
-      return [
-        [0.0, wafer],
-        [right - 0.06e-3, wafer],
-        [right + 0.05e-3, gapDepth], [right + gapW, gapDepth],
-        [right + gapW + 0.07e-3, lipY],
-        [right + gapW + rampL, ringTop],
-        [L - stepW - 0.12e-3, ringTop], [L - stepW, stepY],
-        [L - 0.05e-3, stepY],
-      ];
+      const ringTop = wafer + 0.20e-3;
+      const gapW = 0.25e-3, gapDepth = 0.33 * wafer;
+      const rampL = 0.75e-3, lipY = wafer * 0.9;
+      const stepY = ringTop - 0.10e-3, stepW = 0.60e-3;
+      const right = L * 0.8125;   // L=16mmで13mm相当
+      return {
+        points: [[0, wafer], [right - 0.06e-3, wafer],
+                 [right + 0.05e-3, gapDepth], [right + gapW, gapDepth],
+                 [right + gapW + 0.07e-3, lipY],
+                 [right + gapW + rampL, ringTop],
+                 [L - stepW - 0.12e-3, ringTop], [L - stepW, stepY],
+                 [L, stepY]],
+        materials: ["wafer", "wafer", "ring", "ring", "ring", "ring",
+                    "ring", "ring"],
+      };
     })(),
+    // 絶縁カバー付きリング: リング上面の内側半分が絶縁体で覆われている例
+    insulator_cover: {
+      points: [[0, wafer], [L * 0.8 - 0.1e-3, wafer],
+               [L * 0.8 + 0.1e-3, 0.30e-3], [L * 0.8 + 0.3e-3, 0.30e-3],
+               [L * 0.8 + 0.4e-3, 0.60e-3], [L * 0.9, 0.60e-3],
+               [L * 0.9 + 0.1e-3, 0.60e-3], [L, 0.60e-3]],
+      materials: ["wafer", "wafer", "ring", "insulator", "insulator",
+                  "insulator", "ring"],
+    },
   };
-  if (!presets[name]) return;
-  if (name === "patent_ring") {
-    // 片側配置: ウェハは左端(x=0)から現在のウェハ右端まで
-    const node = document.getElementById(inputId("geometry", "wafer_left_m"));
-    if (node) node.value = "0";
-  }
-  state.profilePoints = presets[name];
-  const modeSelect = document.getElementById(
-    inputId("geometry", "surface_mode"));
-  if (modeSelect) modeSelect.value = "profile";
+  const preset = presets[name];
+  if (!preset) return;
+  state.geoPoints = preset.points.map((p) => [p[0], p[1]]);
+  state.geoMaterials = [...preset.materials];
+  state.selectedSegment = null;
   renderGeometryEditor();
   syncGeoTextarea();
+}
+
+function renderSegmentTools() {
+  const tools = document.getElementById("geo-seg-tools");
+  if (!tools) return;
+  if (state.selectedSegment === null || state.selectedSegment === undefined) {
+    tools.innerHTML = `<span class="muted">セグメント未選択</span>`;
+    return;
+  }
+  const current = state.geoMaterials[state.selectedSegment];
+  tools.innerHTML = `<span>選択中: セグメント${state.selectedSegment + 1}</span>`
+    + Object.entries(MATERIAL_META).map(([key, meta]) =>
+      `<button data-set-material="${key}"
+        style="border-color:${meta.color};
+        ${key === current ? `background:${meta.color};color:#fff;` : `color:${meta.color};`}">
+        ${meta.label}</button>`).join("");
+  tools.querySelectorAll("button[data-set-material]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.geoMaterials[state.selectedSegment] = btn.dataset.setMaterial;
+      renderGeometryEditor();
+      syncGeoTextarea();
+    }));
 }
 
 function renderGeometryEditor() {
   const host = document.getElementById("geo-editor");
   if (!host || state.model !== "2d") return;
-  const geo = readGeo();
-  const mode = currentSurfaceMode();
-  if (mode === "profile"
-      && (!state.profilePoints || state.profilePoints.length < 3)) {
-    state.profilePoints = defaultProfilePoints(geo);
-    syncGeoTextarea();
-  }
-  const hint = document.getElementById("geo-hint");
-  if (hint) {
-    hint.textContent = mode === "profile"
-      ? "点をドラッグで移動 / 曲線上ダブルクリックで追加 / 点を右クリックで削除 / 橙帯=ウェハ範囲（ドラッグ可）"
-      : "橙帯のウェハ端はドラッグで調整可。profileモードで自由形状を編集できます";
-  }
-  const L = geo.periodic_length_m;
-  const points = state.profilePoints || [];
+  ensureGeoState();
+  const L = readGeoScalar("domain_length_m");
+  const smoothing = readGeoScalar("smoothing_m");
+  const points = state.geoPoints;
+  const materials = state.geoMaterials;
+  // 端点をx=0/Lへ吸着
+  points.sort((a, b) => a[0] - b[0]);
+  points[0][0] = 0.0;
+  points[points.length - 1][0] = L;
+
   const W = 900, H = 280, padL = 48, padR = 14, padT = 14, padB = 32;
   const sx = (m) => padL + (m / L) * (W - padL - padR);
-  const sy = (m, yMax) => H - padB - (m / yMax) * (H - padB - padT);
+  const yPeak = Math.max(...points.map((p) => p[1]));
+  const yMax = yPeak * 1.55 + 1e-9;
+  const sy = (m) => H - padB - (m / yMax) * (H - padB - padT);
+  const invX = (px) => (px - padL) / (W - padL - padR) * L;
+  const invY = (py) => (H - padB - py) / (H - padB - padT) * yMax;
 
-  function computeCurve() {
-    const dense = surfaceDense(geo, mode, points);
-    const peak = Math.max(...dense.ys,
-      ...(mode === "profile" ? points.map((p) => p[1]) : [0]));
-    const yMax = peak * 1.55 + 1e-9;
-    let d = dense.xs.map((x, i) =>
-      `${i ? "L" : "M"}${sx(x).toFixed(1)},${sy(dense.ys[i], yMax).toFixed(1)}`)
-      .join("");
-    d += `L${sx(L).toFixed(1)},${sy(dense.ys[0], yMax).toFixed(1)}`
-      + `L${sx(L).toFixed(1)},${H - padB}L${padL},${H - padB}Z`;
-    return { d, yMax };
-  }
+  const dense = surfaceDenseV2(points, smoothing, L);
+  let fillPath = dense.xs.map((x, i) =>
+    `${i ? "L" : "M"}${sx(x).toFixed(1)},${sy(dense.ys[i]).toFixed(1)}`)
+    .join("");
+  fillPath += `L${sx(L)},${H - padB}L${padL},${H - padB}Z`;
 
-  const curve = computeCurve();
-  const yMax0 = curve.yMax;
+  // セグメント（材質色の線分）。平滑化時も操作対象は折れ線とする
+  const segments = materials.map((material, i) => {
+    const meta = MATERIAL_META[material] || MATERIAL_META.ring;
+    const selected = state.selectedSegment === i;
+    return `<line data-segment="${i}"
+      x1="${sx(points[i][0])}" y1="${sy(points[i][1])}"
+      x2="${sx(points[i + 1][0])}" y2="${sy(points[i + 1][1])}"
+      stroke="${meta.color}" stroke-width="${selected ? 9 : 5}"
+      opacity="${selected ? 1 : 0.8}" style="cursor:pointer"/>`;
+  }).join("");
+
+  const circles = points.map((p, i) =>
+    `<circle data-point="${i}" cx="${sx(p[0])}" cy="${sy(p[1])}"
+      r="6.5" fill="#263238" stroke="#fff" stroke-width="2"
+      style="cursor:grab"/>`).join("");
+
   const ticksX = [];
-  for (let mm = 0; mm <= L * 1e3; mm += 2) {
+  const tickStep = L > 8e-3 ? 2 : 1;
+  for (let mm = 0; mm <= L * 1e3 + 1e-9; mm += tickStep) {
     ticksX.push(`<line x1="${sx(mm * 1e-3)}" x2="${sx(mm * 1e-3)}"
       y1="${H - padB}" y2="${H - padB + 4}" stroke="#889"/>
       <text x="${sx(mm * 1e-3)}" y="${H - 8}" font-size="11" fill="#667"
       text-anchor="middle">${mm}</text>`);
   }
-  const yTickVal = yMax0 * 0.6;
+  const legend = Object.entries(MATERIAL_META).map(([_k, meta], i) =>
+    `<rect x="${W - 240 + i * 78}" y="6" width="12" height="12"
+       fill="${meta.color}"/>
+     <text x="${W - 224 + i * 78}" y="16" font-size="11"
+       fill="#445">${meta.label}</text>`).join("");
+
   host.innerHTML = `
   <svg id="geo-svg" viewBox="0 0 ${W} ${H}"
        style="width:100%;background:#fbfcfe;border:1px solid var(--border);
               border-radius:6px;touch-action:none;user-select:none">
-    <rect id="geo-wafer-band" fill="#ff9800" opacity="0.13"
-      x="${sx(geo.wafer_left_m)}" y="${padT}"
-      width="${sx(geo.wafer_right_m) - sx(geo.wafer_left_m)}"
-      height="${H - padB - padT}"/>
-    <path id="geo-path" d="${curve.d}" fill="rgba(21,101,192,0.14)"
-      stroke="#1565c0" stroke-width="2"/>
-    <line data-handle="wafer_left_m" x1="${sx(geo.wafer_left_m)}"
-      x2="${sx(geo.wafer_left_m)}" y1="${padT}" y2="${H - padB}"
-      stroke="#e65100" stroke-width="8" opacity="0.35"
-      style="cursor:ew-resize"/>
-    <line data-handle="wafer_right_m" x1="${sx(geo.wafer_right_m)}"
-      x2="${sx(geo.wafer_right_m)}" y1="${padT}" y2="${H - padB}"
-      stroke="#e65100" stroke-width="8" opacity="0.35"
-      style="cursor:ew-resize"/>
-    ${mode === "profile" ? points.map((p, i) =>
-      `<circle data-point="${i}" cx="${sx(p[0])}" cy="${sy(p[1], yMax0)}"
-        r="7" fill="#1565c0" stroke="#fff" stroke-width="2"
-        style="cursor:grab"/>`).join("") : ""}
-    ${ticksX.join("")}
-    <text x="${W / 2}" y="${H - 8}" font-size="11" fill="#667"
-      transform="translate(30,0)">x [mm]</text>
-    <text x="10" y="${sy(yTickVal, yMax0)}" font-size="11" fill="#667">
-      ${(yTickVal * 1e3).toFixed(2)}mm</text>
-    <text x="${sx(0.5 * (geo.wafer_left_m + geo.wafer_right_m))}"
-      y="${padT + 14}" font-size="12" fill="#b26500"
-      text-anchor="middle">ウェハ</text>
+    <path d="${fillPath}" fill="rgba(120,130,145,0.10)" stroke="none"/>
+    <line x1="${padL}" x2="${padL}" y1="${padT}" y2="${H - padB}"
+      stroke="#556" stroke-width="2" stroke-dasharray="6 4"/>
+    <line x1="${sx(L)}" x2="${sx(L)}" y1="${padT}" y2="${H - padB}"
+      stroke="#556" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="${padL + 4}" y="${padT + 12}" font-size="11" fill="#556">対称境界</text>
+    <text x="${sx(L) - 4}" y="${padT + 12}" font-size="11" fill="#556"
+      text-anchor="end">対称境界</text>
+    ${smoothing > 0 ? `<path d="${dense.xs.map((x, i) =>
+      `${i ? "L" : "M"}${sx(x).toFixed(1)},${sy(dense.ys[i]).toFixed(1)}`)
+      .join("")}" fill="none" stroke="#90a4ae" stroke-width="1.5"
+      stroke-dasharray="3 3"/>` : ""}
+    ${segments}${circles}${ticksX.join("")}${legend}
+    <text x="${W / 2 + 30}" y="${H - 8}" font-size="11" fill="#667">x [mm]</text>
+    <text x="10" y="${sy(yPeak)}" font-size="11" fill="#667">
+      ${(yPeak * 1e3).toFixed(2)}mm</text>
   </svg>`;
+  renderSegmentTools();
 
   const svg = host.querySelector("#geo-svg");
   const toLocal = (event) => {
@@ -611,89 +644,94 @@ function renderGeometryEditor() {
     return { x: (event.clientX - rect.left) / rect.width * W,
              y: (event.clientY - rect.top) / rect.height * H };
   };
-  const invX = (px) => (px - padL) / (W - padL - padR) * L;
-  const invY = (py, yMax) => (H - padB - py) / (H - padB - padT) * yMax;
   let drag = null;
 
   function refresh() {
-    const c = computeCurve();
-    svg.querySelector("#geo-path").setAttribute("d", c.d);
+    const d2 = surfaceDenseV2(points, smoothing, L);
+    let fp = d2.xs.map((x, i) =>
+      `${i ? "L" : "M"}${sx(x).toFixed(1)},${sy(d2.ys[i]).toFixed(1)}`)
+      .join("");
+    fp += `L${sx(L)},${H - padB}L${padL},${H - padB}Z`;
+    svg.querySelector("path").setAttribute("d", fp);
+    svg.querySelectorAll("line[data-segment]").forEach((line) => {
+      const i = +line.dataset.segment;
+      line.setAttribute("x1", sx(points[i][0]));
+      line.setAttribute("y1", sy(points[i][1]));
+      line.setAttribute("x2", sx(points[i + 1][0]));
+      line.setAttribute("y2", sy(points[i + 1][1]));
+    });
     svg.querySelectorAll("circle[data-point]").forEach((circle) => {
       const p = points[+circle.dataset.point];
       circle.setAttribute("cx", sx(p[0]));
-      circle.setAttribute("cy", sy(p[1], c.yMax));
-    });
-    const band = svg.querySelector("#geo-wafer-band");
-    band.setAttribute("x", sx(geo.wafer_left_m));
-    band.setAttribute("width",
-      sx(geo.wafer_right_m) - sx(geo.wafer_left_m));
-    svg.querySelectorAll("line[data-handle]").forEach((line) => {
-      const v = geo[line.dataset.handle];
-      line.setAttribute("x1", sx(v));
-      line.setAttribute("x2", sx(v));
+      circle.setAttribute("cy", sy(p[1]));
     });
   }
 
   svg.addEventListener("pointerdown", (event) => {
     const target = event.target;
     if (target.dataset.point !== undefined) {
-      drag = { type: "point", index: +target.dataset.point };
-    } else if (target.dataset.handle) {
-      drag = { type: "handle", key: target.dataset.handle };
-    } else {
-      return;
+      drag = { index: +target.dataset.point };
+      try {
+        svg.setPointerCapture(event.pointerId);
+      } catch (_error) { /* 合成イベントでは無視 */ }
+      event.preventDefault();
     }
-    try {
-      svg.setPointerCapture(event.pointerId);
-    } catch (_error) { /* 合成イベント等でcapture不可でもドラッグは動く */ }
-    event.preventDefault();
   });
   svg.addEventListener("pointermove", (event) => {
     if (!drag) return;
     const local = toLocal(event);
-    const xm = Math.min(Math.max(invX(local.x), 0), L * 0.9999);
-    if (drag.type === "point") {
-      const ym = Math.max(invY(local.y, computeCurve().yMax), 0.02e-3);
-      points[drag.index] = [xm, ym];
-    } else {
-      geo[drag.key] = xm;
-      const node = document.getElementById(inputId("geometry", drag.key));
-      if (node) node.value = fmtNum(Number(xm.toPrecision(5)));
-    }
+    const i = drag.index;
+    const isEndpoint = i === 0 || i === points.length - 1;
+    const xm = isEndpoint ? points[i][0]
+      : Math.min(Math.max(invX(local.x), 1e-6), L - 1e-6);
+    const ym = Math.max(invY(local.y), 0.02e-3);
+    points[i] = [xm, ym];
     refresh();
   });
   svg.addEventListener("pointerup", () => {
     if (drag) {
       drag = null;
+      points.sort((a, b) => a[0] - b[0]);
+      renderGeometryEditor();
       syncGeoTextarea();
     }
   });
+  svg.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target.dataset.segment !== undefined) {
+      state.selectedSegment = +target.dataset.segment;
+      renderGeometryEditor();
+    }
+  });
   svg.addEventListener("dblclick", (event) => {
-    if (mode !== "profile") return;
     const local = toLocal(event);
-    const xm = Math.min(Math.max(invX(local.x), 0), L * 0.9999);
-    const dense = surfaceDense(geo, mode, points);
-    const idx = Math.round(xm / L * dense.xs.length) % dense.xs.length;
-    points.push([xm, dense.ys[idx]]);
-    state.profilePoints = points;
+    const xm = Math.min(Math.max(invX(local.x), 1e-6), L - 1e-6);
+    // 追加位置のセグメントを分割し、材質を引き継ぐ
+    let seg = 0;
+    while (seg < points.length - 2 && points[seg + 1][0] < xm) seg++;
+    const d2 = surfaceDenseV2(points, 0, L);
+    const idx = Math.min(Math.round(xm / L * (d2.xs.length - 1)),
+                         d2.xs.length - 1);
+    points.splice(seg + 1, 0, [xm, d2.ys[idx]]);
+    state.geoMaterials.splice(seg, 0, state.geoMaterials[seg]);
+    state.selectedSegment = null;
     renderGeometryEditor();
     syncGeoTextarea();
   });
   svg.addEventListener("contextmenu", (event) => {
     const target = event.target;
-    if (mode === "profile" && target.dataset.point !== undefined
-        && points.length > 3) {
-      event.preventDefault();
-      points.splice(+target.dataset.point, 1);
-      state.profilePoints = points;
-      renderGeometryEditor();
-      syncGeoTextarea();
-    } else if (target.dataset.point !== undefined) {
-      event.preventDefault();  // 3点未満にはしない
-    }
+    if (target.dataset.point === undefined) return;
+    event.preventDefault();
+    const i = +target.dataset.point;
+    if (i === 0 || i === points.length - 1 || points.length <= 2) return;
+    // 点を削除し、左右セグメントを左側の材質で統合
+    points.splice(i, 1);
+    state.geoMaterials.splice(i, 1);
+    state.selectedSegment = null;
+    renderGeometryEditor();
+    syncGeoTextarea();
   });
 }
-
 function updateTimeEstimate() {
   const node = document.getElementById("time-estimate");
   if (!node) return;
@@ -832,11 +870,11 @@ function collectConfig() {
     throw new Error(`入力を確認してください: ${errors.join(" / ")}`);
   }
   if (state.model === "2d" && config.geometry) {
-    config.geometry.profile_points_m =
-      (state.profilePoints || []).map((p) => [p[0], p[1]]);
-    if (config.geometry.surface_mode === "profile"
-        && config.geometry.profile_points_m.length < 3) {
-      throw new Error("profileモードには制御点が3点以上必要です。");
+    ensureGeoState();
+    config.geometry.points_m = state.geoPoints.map((p) => [p[0], p[1]]);
+    config.geometry.segment_materials = [...state.geoMaterials];
+    if (!config.geometry.segment_materials.includes("wafer")) {
+      throw new Error("ウェハ材質のセグメントが少なくとも1つ必要です。");
     }
   }
   return config;
@@ -1169,17 +1207,21 @@ function summaryTableHtml(rows, model) {
       <th class="num">|角度|平均 [deg]</th><th class="num">&lt;τ&gt;/T</th>
       <th class="num">CX [%]</th></tr></thead><tbody>${body}</tbody></table></div>`;
   }
+  const fmt = (v, digits) => (v == null ? "-" : v.toFixed(digits));
   const body = rows.map((r) => `<tr>
     <td class="num">${r.pressure_mTorr}</td>
-    <td class="num">${r.edge_outward_tilt_deg?.toFixed(2)}</td>
-    <td class="num">${(r.affected_width_m * 1e3)?.toFixed(2)}</td>
-    <td class="num">${r.wafer_mean_energy_eV?.toFixed(1)}</td>
-    <td class="num">${r.ring_mean_energy_eV?.toFixed(1)}</td>
+    <td class="num">${fmt(r.edge_outward_tilt_deg, 2)}</td>
+    <td class="num">${fmt(r.affected_width_m == null ? null
+      : r.affected_width_m * 1e3, 2)}</td>
+    <td class="num">${fmt(r.wafer_mean_energy_eV, 1)}</td>
+    <td class="num">${fmt(r.ring_mean_energy_eV, 1)}</td>
+    <td class="num">${fmt(r.insulator_mean_energy_eV, 1)}</td>
     <td class="num">${r.n_reached}</td></tr>`).join("");
-  return `<div class="card"><h2>要約（端傾き）</h2><table><thead><tr>
+  return `<div class="card"><h2>要約（端傾き・材質別）</h2><table><thead><tr>
     <th class="num">p [mTorr]</th><th class="num">端の外向き傾き [deg]</th>
     <th class="num">影響領域幅 [mm]</th><th class="num">wafer &lt;E&gt; [eV]</th>
-    <th class="num">ring &lt;E&gt; [eV]</th><th class="num">到達数</th>
+    <th class="num">ring &lt;E&gt; [eV]</th><th class="num">絶縁 &lt;E&gt; [eV]</th>
+    <th class="num">到達数</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
@@ -1289,11 +1331,25 @@ function initCollectors(job) {
   state.currentJobId = job.id;
   state.collectorEval = null;
   const geo = job.config.geometry || {};
+  // wafer材質の最初の連続範囲を既定コレクタにする
+  let waferMin = 3e-3, waferMax = 13e-3;
+  if (geo.points_m && geo.segment_materials) {
+    const idx = geo.segment_materials.indexOf("wafer");
+    if (idx >= 0) {
+      waferMin = geo.points_m[idx][0];
+      let end = idx;
+      while (end < geo.segment_materials.length
+             && geo.segment_materials[end] === "wafer") end++;
+      waferMax = geo.points_m[end][0];
+    }
+  }
+  const span = waferMax - waferMin;
   const defaults = [{
     label: "ウェハ中央",
-    x_min_m: (geo.wafer_left_m ?? 3e-3) + 1e-3,
-    x_max_m: (geo.wafer_right_m ?? 13e-3) - 1e-3,
+    x_min_m: waferMin + 0.1 * span,
+    x_max_m: waferMax - 0.1 * span,
   }];
+  state.waferRange = [waferMin, waferMax];
   state.collectors = (job.collectors && job.collectors.length)
     ? job.collectors.map((c) => ({ ...c })) : defaults;
   renderCollectorList();
@@ -1301,8 +1357,8 @@ function initCollectors(job) {
   $("#col-add").addEventListener("click", () => {
     state.collectors.push({
       label: `C${state.collectors.length + 1}`,
-      x_min_m: geo.wafer_left_m ?? 3e-3,
-      x_max_m: geo.wafer_right_m ?? 13e-3,
+      x_min_m: waferMin,
+      x_max_m: waferMax,
     });
     renderCollectorList();
     drawCollectorBands();
@@ -1584,7 +1640,13 @@ function drawDetailPlots(plots) {
     ], { title: "シース電圧", xtitle: "RF phase [deg]", ytitle: "Sheath voltage [V]" });
 
     const geometry = plots.geometry;
-    const edgeShapes = [geometry.wafer_left_mm, geometry.wafer_right_mm].map((x) => ({
+    const edgePositions = [];
+    (geometry.wafer_ranges_mm || []).forEach(([a, b]) => {
+      const lengthMm = geometry.x_mm[geometry.x_mm.length - 1];
+      if (a > 1e-6) edgePositions.push(a);
+      if (b < lengthMm - 1e-6) edgePositions.push(b);
+    });
+    const edgeShapes = edgePositions.map((x) => ({
       type: "line", x0: x, x1: x, yref: "paper", y0: 0, y1: 1,
       line: { color: "#999", width: 1, dash: "dot" },
     }));
@@ -1622,9 +1684,15 @@ function drawDetailPlots(plots) {
           name: `ring ${entry.pressure_mTorr} mTorr`,
           line: { color: COLORS[i % COLORS.length], dash: "dash" } });
       }
+      if (entry.insulator_density) {
+        iedfTraces.push({ x: centers(entry.edges_eV),
+          y: entry.insulator_density,
+          name: `絶縁 ${entry.pressure_mTorr} mTorr`,
+          line: { color: COLORS[i % COLORS.length], dash: "dot" } });
+      }
     });
     linePlot("plot-iedf", iedfTraces,
-      { title: "電極別IEDF", xtitle: "Ion impact energy [eV]", ytitle: "IEDF [1/eV]" });
+      { title: "材質別IEDF", xtitle: "Ion impact energy [eV]", ytitle: "IEDF [1/eV]" });
     plots.iaedf.forEach((entry, i) =>
       heatmapPlot(`plot-iaedf-${i}`, entry,
         `Wafer IAEDF ${entry.pressure_mTorr} mTorr`));

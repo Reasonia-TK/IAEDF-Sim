@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .model2d.field import (MAT_INSULATOR, MAT_RING,
+                            wafer_ranges as _wafer_ranges)
 from .schemas import Config1D, Config2D
 
 
@@ -125,7 +127,7 @@ def build_plots_2d(output: dict, config: Config2D) -> dict:
     circuit = output["circuit_solution"]
     geo = config.geometry
     analysis = config.analysis
-    length = geo.periodic_length_m
+    length = geo.domain_length_m
 
     deg = np.degrees(circuit["phase"])
     vp_plot = {
@@ -138,11 +140,14 @@ def build_plots_2d(output: dict, config: Config2D) -> dict:
     }
 
     surface = output["basis"]["plasma"]
+    points = np.asarray(geo.points_m, dtype=float)
     geometry_plot = {
         "x_mm": _finite_list(np.asarray(surface["x"]) * 1e3),
         "surface_mm": _finite_list(np.asarray(surface["surface"]) * 1e3),
-        "wafer_left_mm": geo.wafer_left_m * 1e3,
-        "wafer_right_mm": geo.wafer_right_m * 1e3,
+        "points_mm": [[float(p[0] * 1e3), float(p[1] * 1e3)] for p in points],
+        "segment_materials": list(geo.segment_materials),
+        "wafer_ranges_mm": [[float(a * 1e3), float(b * 1e3)]
+                            for a, b in _wafer_ranges(geo)],
     }
 
     profiles, iedf, iaedf, summary_rows, phi_sc_maps = [], [], [], [], []
@@ -172,17 +177,25 @@ def build_plots_2d(output: dict, config: Config2D) -> dict:
         e_all = run["energy_eV"]
         e_max = float(np.percentile(e_all, 99.7)) * 1.05 if e_all.size else 1.0
         onw = run["on_wafer"]
+        material = run["impact_material"]
         wafer_hist, wedges = np.histogram(
             e_all[onw], bins=analysis.energy_bins, range=(0, e_max),
             density=True)
         entry = {"pressure_mTorr": pressure,
                  "edges_eV": _finite_list(wedges),
                  "wafer_density": _finite_list(wafer_hist)}
-        if np.any(~onw):
+        ring_mask = material == MAT_RING
+        if np.any(ring_mask):
             ring_hist, _ = np.histogram(
-                e_all[~onw], bins=analysis.energy_bins, range=(0, e_max),
+                e_all[ring_mask], bins=analysis.energy_bins, range=(0, e_max),
                 density=True)
             entry["ring_density"] = _finite_list(ring_hist)
+        ins_mask = material == MAT_INSULATOR
+        if np.any(ins_mask):
+            ins_hist, _ = np.histogram(
+                e_all[ins_mask], bins=analysis.energy_bins, range=(0, e_max),
+                density=True)
+            entry["insulator_density"] = _finite_list(ins_hist)
         iedf.append(entry)
 
         if np.any(onw):
@@ -247,7 +260,8 @@ def save_npz_2d(path, output: dict):
     }
     for i, res in enumerate(output["results"]):
         run = res["run"]
-        for key in ("energy_eV", "angle_deg", "impact_x_m", "on_wafer"):
+        for key in ("energy_eV", "angle_deg", "impact_x_m", "on_wafer",
+                    "impact_segment", "impact_material"):
             arrays[f"p{i}_{key}"] = run[key]
         arrays[f"p{i}_pressure_mTorr"] = np.array(res["pressure"])
         if res["sc"] is not None:

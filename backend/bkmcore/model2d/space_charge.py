@@ -7,6 +7,7 @@ from ..constants import EPS0, QE
 from ..plasma import PlasmaDerived
 from ..schemas import (Field2DConfig, GasConfig, GeometryConfig,
                        SpaceChargeConfig, Tpmc2DConfig)
+from .field import _mirror_index
 from .tpmc import run_tpmc_2d
 
 
@@ -30,15 +31,17 @@ def poisson_sor(source, active, field2d, f2d: Field2DConfig,
     jj, ii = np.indices(phi.shape)
     red = active & (((ii + jj) & 1) == 0)
     black = active & ~red
+    west_i, east_i = _mirror_index(phi.shape[1])
+    south_j, north_j = _mirror_index(phi.shape[0])
     iteration = 0
     update = 0.0
     for iteration in range(1, int(sc.poisson_max_iterations) + 1):
         update = 0.0
         for mask in (red, black):
-            east = np.roll(phi, -1, axis=1)
-            west = np.roll(phi, 1, axis=1)
-            north = np.roll(phi, -1, axis=0)
-            south = np.roll(phi, 1, axis=0)
+            east = phi[:, east_i]
+            west = phi[:, west_i]
+            north = phi[north_j, :]
+            south = phi[south_j, :]
             gs = ((east + west) * idx2 + (north + south) * idy2 + source) / den
             new = (1.0 - omega_sor) * phi[mask] + omega_sor * gs[mask]
             update = max(update, float(np.max(np.abs(new - phi[mask]))))
@@ -48,7 +51,7 @@ def poisson_sor(source, active, field2d, f2d: Field2DConfig,
     return phi, iteration, update
 
 
-def electron_density_avg(phi_sc, active, basis, circuit_solution,
+def electron_density_avg(phi_sc, plasma_region, basis, circuit_solution,
                          sc: SpaceChargeConfig, derived: PlasmaDerived):
     idx = np.linspace(0, circuit_solution["phase"].size,
                       int(sc.electron_phase_samples),
@@ -62,7 +65,7 @@ def electron_density_avg(phi_sc, active, basis, circuit_solution,
                      + phi_sc)
         dens += np.exp(np.clip((potential - vp) / derived.te, -80.0, 0.0))
     dens *= derived.n_s / idx.size
-    dens[~active] = 0.0
+    dens[~plasma_region] = 0.0
     return dens
 
 
@@ -74,8 +77,13 @@ def build_space_charge(pressure_mTorr, seed, *, derived: PlasmaDerived,
                        log_cb=None, progress_cb=None):
     field2d = basis["plasma"]
     conductor = field2d["conductor"]
+    solid = field2d["solid"]
+    # 電位を解く領域: 導体と上端以外（絶縁体の固体内部も含む）
     active = ~conductor
     active[-1] = False
+    # 電荷が存在するプラズマ領域: 固体の外のみ
+    plasma_region = ~solid
+    plasma_region[-1] = False
     phi_sc = np.zeros_like(field2d["psi"])
     ex_sc = np.zeros_like(phi_sc)
     ey_sc = np.zeros_like(phi_sc)
@@ -98,11 +106,11 @@ def build_space_charge(pressure_mTorr, seed, *, derived: PlasmaDerived,
         ni = gaussian_smooth_2d(dep["ion_density_m3"],
                                 sc.density_smoothing_sigma_cells)
         ni = np.clip(ni, 0.0, sc.ion_density_clip_factor * derived.n_s)
-        ni[~active] = 0.0
-        ne = electron_density_avg(phi_sc, active, basis, circuit_solution,
-                                  sc, derived)
+        ni[~plasma_region] = 0.0
+        ne = electron_density_avg(phi_sc, plasma_region, basis,
+                                  circuit_solution, sc, derived)
         rho = QE * (ni - ne)
-        rho[~active] = 0.0
+        rho[~plasma_region] = 0.0
         target, iters, update = poisson_sor(rho / EPS0, active, field2d, f2d, sc)
         peak = float(np.max(np.abs(target)))
         if peak > sc.max_abs_correction_V:
