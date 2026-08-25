@@ -12,6 +12,10 @@ const state = {
   compareSet: new Set(),
   historyJobs: [],
   activeTimer: null,
+  lastStatuses: new Map(),
+  openLogs: new Set(),
+  compareBody: null,
+  currentValidation: null,
 };
 
 const COLORS = ["#3b528b", "#21918c", "#5ec962", "#f9a825", "#c62828",
@@ -32,7 +36,90 @@ const ENUMS = {
 };
 
 const OPEN_GROUPS = new Set(["waveform", "wafer_waveform", "ring_waveform",
-                             "plasma", "gas", "tpmc"]);
+                             "plasma", "gas", "tpmc", "geometry"]);
+
+// フィールドの日本語ラベル [表示名, 補足ツールチップ]
+const LABELS = {
+  mode: ["波形モード", "sinusoid=正弦波 / csv=CSV読込 / scaled_wafer=ウェハ波形の倍率+DC"],
+  x_axis: ["CSV横軸の種類", "time_s=秒 / phase_deg=位相角 など"],
+  delimiter: ["区切り文字", ""],
+  skip_header_rows: ["ヘッダ行数", "読み飛ばす先頭行数"],
+  x_column: ["横軸の列番号", "0始まり"],
+  voltage_column: ["電圧の列番号", "0始まり"],
+  voltage_scale: ["電圧スケール倍率", ""],
+  voltage_offset_V: ["電圧オフセット [V]", ""],
+  phase_offset_deg: ["位相オフセット [deg]", ""],
+  sinusoid_dc_V: ["DC成分 [V]", "自己バイアス相当"],
+  sinusoid_amplitude_V: ["振幅 [V]", ""],
+  sinusoid_phase_offset_deg: ["位相オフセット [deg]", ""],
+  wafer_scale: ["ウェハ波形倍率", ""],
+  wafer_phase_offset_deg: ["位相シフト [deg]", ""],
+  dc_offset_V: ["DCオフセット [V]", ""],
+  frequency_Hz: ["RF周波数 [Hz]", "既定13.56 MHz"],
+  electron_temperature_eV: ["電子温度 Te [eV]", "浮遊電位差・Bohm速度を決める"],
+  sheath_edge_density_m3: ["シース端密度 n_s [m^-3]", "イオン電流とシース幅を決める"],
+  ion_mass_amu: ["イオン質量 [amu]", "Ar+=39.948, He+=4.0026（断面積データも合わせる）"],
+  powered_to_grounded_area_ratio: ["駆動/接地 面積比", "小さいほど駆動側シースに電圧が集中"],
+  grounded_electrode_voltage_V: ["接地電極電位 [V]", ""],
+  phase_points: ["位相分割数", "KCL積分の1周期分割数"],
+  max_cycles: ["最大周期数", "周期定常までの上限"],
+  periodic_tolerance_V: ["周期収束判定 [V]", ""],
+  capacitance_factor: ["シース容量係数", ""],
+  model: ["シースモデル", "moving_front=電子フロント運動シース（検証済みベスト）"],
+  front_width_exponent: ["フロント幅指数 p", "s_e = s_max (Vsp/Vsp_max)^p"],
+  potential_exponent: ["電位指数 α", "4/3でChild則"],
+  gas_temperature_K: ["ガス温度 [K]", ""],
+  pressures_mTorr: ["圧力リスト [mTorr]", "カンマ区切りで複数指定可（0=無衝突）"],
+  cross_section_source: ["断面積ソース", "lxcat_phelps=評価済みデータ（推奨）"],
+  xsec_csv_name: ["断面積データ", "イオン種に合わせて選択"],
+  elastic_to_cx_ratio: ["弾性/CX比", "approximation時のみ有効"],
+  cross_section_scale: ["断面積スケール", "approximation時のみ有効"],
+  n_particles: ["粒子数", "3万で統計良好。条件探索は1/10で高速確認"],
+  ion_temperature_eV: ["イオン温度 [eV]", "シース端での熱広がり"],
+  steps_per_rf_period: ["ステップ数/RF周期", "衝突確率が大きい場合は増やす"],
+  max_rf_periods: ["最大追跡周期数", ""],
+  seed: ["乱数シード", "同一シードで結果は再現される"],
+  max_recommended_collision_probability: ["衝突確率上限", "検証セルの警告しきい値"],
+  energy_bins: ["エネルギービン数", ""],
+  angle_bins: ["角度ビン数", ""],
+  energy_max_eV: ["エネルギー上限 [eV]", "空欄で自動（99.7パーセンタイル）"],
+  wafer_to_ground_area_ratio: ["ウェハ/接地 面積比", ""],
+  ring_to_ground_area_ratio: ["リング/接地 面積比", ""],
+  ground_voltage_V: ["接地電位 [V]", ""],
+  periodic_length_m: ["周期長 [m]", "x方向周期境界の長さ"],
+  wafer_left_m: ["ウェハ左端 [m]", ""],
+  wafer_right_m: ["ウェハ右端 [m]", ""],
+  wafer_height_m: ["ウェハ高さ [m]", ""],
+  ring_height_m: ["リング高さ [m]", "ウェハより低いと消耗リング相当"],
+  step_smoothing_width_m: ["段差平滑化幅 [m]", "tanh遷移の幅"],
+  top_clearance_factor: ["上端クリアランス係数", "シース幅スケールに対する余裕"],
+  nx: ["格子数 nx", ""],
+  ny: ["格子数 ny", ""],
+  sor_omega: ["SOR緩和係数", "1.9前後で高速収束"],
+  tolerance: ["収束判定", ""],
+  max_iterations: ["最大反復数", ""],
+  enabled: ["空間電荷補正ON", "OFFでLaplaceシース（傾きは下限側）"],
+  outer_iterations: ["外部反復回数", "既定5。2で高速傾向確認"],
+  deposition_particles: ["密度堆積粒子数", ""],
+  under_relaxation: ["緩和係数", "発散する場合は下げる"],
+  density_smoothing_sigma_cells: ["密度平滑化σ [セル]", ""],
+  ion_density_clip_factor: ["イオン密度クリップ倍率", ""],
+  electron_phase_samples: ["電子位相サンプル数", ""],
+  max_abs_correction_V: ["補正上限 [V]", ""],
+  poisson_tolerance_V: ["Poisson収束判定 [V]", ""],
+  poisson_max_iterations: ["Poisson最大反復", ""],
+  edge_exclusion_m: ["端除外幅 [m]", "統計から除くウェハ最端部"],
+  edge_band_m: ["端帯域幅 [m]", "端傾き平均を取る帯"],
+  bin_width_m: ["距離ビン幅 [m]", ""],
+  max_distance_m: ["最大距離 [m]", ""],
+  affected_threshold_deg: ["影響判定しきい値 [deg]", ""],
+};
+
+function fieldLabelText(key) {
+  const entry = LABELS[key];
+  if (!entry) return { text: key, tip: key };
+  return { text: entry[0], tip: entry[1] ? `${key} — ${entry[1]}` : key };
+}
 
 // ---------------- API ----------------
 
@@ -79,31 +166,31 @@ function inputId(group, key) { return `f|${group}|${key}`; }
 
 function fieldInput(group, key, value) {
   const id = inputId(group, key);
+  const { text, tip } = fieldLabelText(key);
+  const wrap = (inner, suffix = "") =>
+    `<label title="${tip}">${text}${suffix}${inner}</label>`;
   const enumKey = ENUMS[`${group}.${key}`] ? `${group}.${key}`
     : (ENUMS[key] ? key : null);
   if (group === "gas" && key === "xsec_csv_name") {
     const options = state.xsecFiles.map((f) =>
       `<option value="${f}" ${f === value ? "selected" : ""}>${f}</option>`);
-    return `<label>${key}<select id="${id}">${options.join("")}</select></label>`;
+    return wrap(`<select id="${id}">${options.join("")}</select>`);
   }
   if (enumKey) {
     const options = ENUMS[enumKey].map((v) =>
       `<option value="${v}" ${v === value ? "selected" : ""}>${v}</option>`);
-    return `<label>${key}<select id="${id}">${options.join("")}</select></label>`;
+    return wrap(`<select id="${id}">${options.join("")}</select>`);
   }
   if (typeof value === "boolean") {
-    return `<label>${key}<input type="checkbox" id="${id}" ${value ? "checked" : ""}></label>`;
+    return wrap(`<input type="checkbox" id="${id}" ${value ? "checked" : ""}>`);
   }
   if (Array.isArray(value)) {
-    return `<label>${key}（カンマ区切り）<input id="${id}" value="${value.join(", ")}"></label>`;
-  }
-  if (typeof value === "number") {
-    return `<label>${key}<input id="${id}" value="${value}"></label>`;
+    return wrap(`<input id="${id}" value="${value.join(", ")}">`);
   }
   if (value === null) {
-    return `<label>${key}（空=自動）<input id="${id}" value=""></label>`;
+    return wrap(`<input id="${id}" value="" placeholder="自動">`);
   }
-  return `<label>${key}<input id="${id}" value="${value}"></label>`;
+  return wrap(`<input id="${id}" value="${value}">`);
 }
 
 function waveformGroupHtml(group, values, isRing) {
@@ -136,9 +223,10 @@ function waveformGroupHtml(group, values, isRing) {
     body = ["wafer_scale", "wafer_phase_offset_deg", "dc_offset_V"]
       .map((k) => fieldInput(group, k, values[k])).join("");
   }
+  const { text, tip } = fieldLabelText("mode");
   return `
-    <label>mode<select id="${inputId(group, "mode")}" data-wf-group="${group}">
-      ${modeOptions.join("")}</select></label>${body}`;
+    <label title="${tip}">${text}<select id="${inputId(group, "mode")}"
+      data-wf-group="${group}">${modeOptions.join("")}</select></label>${body}`;
 }
 
 function isWaveformGroup(group) {
@@ -162,12 +250,23 @@ function buildForm() {
       : Object.entries(values)
           .filter(([k]) => !["csv_text", "waveform_id"].includes(k))
           .map(([k, v]) => fieldInput(group, k, v)).join("");
+    let extra = "";
+    if (isWaveformGroup(group)) {
+      extra = `<div class="row" style="margin-top:6px">
+        <button type="button" data-preview-group="${group}">波形プレビュー</button>
+        <span id="wfstat|${group}" class="muted"></span></div>
+        <div id="wfprev|${group}" class="plot hidden" style="min-height:240px"></div>`;
+    } else if (group === "geometry") {
+      extra = `<div id="geo-preview" class="plot" style="min-height:260px"></div>`;
+    }
     const card = document.createElement("div");
     card.className = "card config-group";
     card.innerHTML = `<details ${open}><summary>${label}</summary>
-      <div class="config-grid" id="grid|${group}">${inner}</div></details>`;
+      <div class="config-grid" id="grid|${group}">${inner}</div>${extra}</details>`;
     container.appendChild(card);
   }
+  if (state.model === "2d") updateGeometryPreview();
+  updateTimeEstimate();
 
 }
 
@@ -185,7 +284,121 @@ function onConfigFormChange(event) {
   }
   if (target.type === "file" && target.id.endsWith("|upload")) {
     handleWaveformUpload(target);
+    return;
   }
+  if (target.id && target.id.startsWith("f|geometry|")) {
+    updateGeometryPreview();
+  }
+  updateTimeEstimate();
+}
+
+function onConfigFormClick(event) {
+  const button = event.target.closest("button[data-preview-group]");
+  if (button) previewWaveform(button.dataset.previewGroup);
+}
+
+// ---------------- 波形・形状プレビュー ----------------
+
+async function previewWaveform(group) {
+  const statNode = document.getElementById(`wfstat|${group}`);
+  try {
+    const config = collectWaveformGroup(group);
+    if (config.mode === "csv" && config.waveform_id === null) {
+      statNode.textContent = "波形を選択またはアップロードしてください";
+      return;
+    }
+    const payload = {
+      waveform: config,
+      frequency_Hz: readField("plasma", "frequency_Hz",
+        state.defaults[state.model].plasma.frequency_Hz),
+    };
+    if (config.mode === "scaled_wafer") {
+      payload.wafer_waveform = collectWaveformGroup("wafer_waveform");
+    }
+    const body = await api("/api/waveform-preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const div = document.getElementById(`wfprev|${group}`);
+    div.classList.remove("hidden");
+    linePlot(div, [{ x: body.phase_deg, y: body.voltage_V,
+      name: "V(t)", line: { color: COLORS[0] } }],
+      { title: "駆動波形（1周期）", xtitle: "RF phase [deg]", ytitle: "電位 [V]" });
+    statNode.textContent = `min ${body.min_V.toFixed(1)} V / `
+      + `max ${body.max_V.toFixed(1)} V / 平均 ${body.mean_V.toFixed(1)} V`;
+  } catch (error) {
+    statNode.textContent = `プレビュー失敗: ${error.message}`;
+  }
+}
+
+function updateGeometryPreview() {
+  const div = document.getElementById("geo-preview");
+  if (!div || state.model !== "2d") return;
+  const defaults = state.defaults["2d"].geometry;
+  let geo;
+  try {
+    geo = Object.fromEntries(Object.keys(defaults).map((key) =>
+      [key, readField("geometry", key, defaults[key])]));
+  } catch (_error) {
+    return;   // 入力途中の数値エラーは無視
+  }
+  const n = 400;
+  const xs = [], ys = [];
+  const width = Math.max(geo.step_smoothing_width_m, 1e-12);
+  for (let i = 0; i <= n; i++) {
+    const x = geo.periodic_length_m * i / n;
+    const window = 0.5 * (Math.tanh((x - geo.wafer_left_m) / width)
+      - Math.tanh((x - geo.wafer_right_m) / width));
+    const s = geo.ring_height_m
+      + (geo.wafer_height_m - geo.ring_height_m) * window;
+    xs.push(x * 1e3);
+    ys.push(s * 1e3);
+  }
+  const shapes = [geo.wafer_left_m, geo.wafer_right_m].map((x) => ({
+    type: "line", x0: x * 1e3, x1: x * 1e3, yref: "paper", y0: 0, y1: 1,
+    line: { color: "#999", width: 1, dash: "dot" },
+  }));
+  linePlot(div, [{ x: xs, y: ys, name: "表面高さ s(x)",
+    fill: "tozeroy", line: { color: COLORS[0] } }], {
+    title: "2D形状プレビュー（点線=ウェハ端、左右はリング領域）",
+    xtitle: "x [mm]", ytitle: "高さ [mm]", shapes,
+  });
+}
+
+function updateTimeEstimate() {
+  const node = document.getElementById("time-estimate");
+  if (!node) return;
+  try {
+    const defaults = state.defaults[state.model];
+    if (!defaults) return;
+    const particles = readField("tpmc", "n_particles",
+      defaults.tpmc.n_particles);
+    const pressures = readField("gas", "pressures_mTorr",
+      defaults.gas.pressures_mTorr);
+    const nPressures = Math.max(pressures.length, 1);
+    let seconds;
+    if (state.model === "1d") {
+      seconds = 0.0004 * particles * nPressures + 3;
+    } else {
+      const nx = readField("field2d", "nx", defaults.field2d.nx);
+      const ny = readField("field2d", "ny", defaults.field2d.ny);
+      const scEnabled = readField("space_charge", "enabled",
+        defaults.space_charge.enabled);
+      const outers = scEnabled
+        ? readField("space_charge", "outer_iterations",
+            defaults.space_charge.outer_iterations) : 0;
+      const deposition = scEnabled
+        ? readField("space_charge", "deposition_particles",
+            defaults.space_charge.deposition_particles) : 0;
+      seconds = 6 * (nx * ny) / 67584
+        + 0.001 * (outers * deposition + particles) * nPressures + 5;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const text = minutes >= 1
+      ? `約${minutes}分${Math.round(seconds % 60)}秒`
+      : `約${Math.round(seconds)}秒`;
+    node.textContent = `計算時間の目安: ${text}（開発機実測基準。サーバー性能・条件により変動）`;
+  } catch (_error) { /* 入力途中は無視 */ }
 }
 
 async function handleWaveformUpload(input) {
@@ -260,17 +473,33 @@ function collectWaveformGroup(group) {
 }
 
 function collectConfig() {
+  document.querySelectorAll("#config-form .input-error")
+    .forEach((node) => node.classList.remove("input-error"));
   const defaults = state.defaults[state.model];
   const config = {};
+  const errors = [];
   for (const [group, values] of Object.entries(defaults)) {
     if (isWaveformGroup(group)) {
-      config[group] = collectWaveformGroup(group);
+      try {
+        config[group] = collectWaveformGroup(group);
+      } catch (error) {
+        errors.push(error.message);
+      }
     } else {
       config[group] = {};
       for (const [key, defaultValue] of Object.entries(values)) {
-        config[group][key] = readField(group, key, defaultValue);
+        try {
+          config[group][key] = readField(group, key, defaultValue);
+        } catch (error) {
+          errors.push(error.message);
+          const node = document.getElementById(inputId(group, key));
+          if (node) node.classList.add("input-error");
+        }
       }
     }
+  }
+  if (errors.length) {
+    throw new Error(`入力を確認してください: ${errors.join(" / ")}`);
   }
   return config;
 }
@@ -304,9 +533,43 @@ async function runJob() {
   }
 }
 
+function showToast(text, kind, jobId) {
+  const container = $("#toasts");
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${kind}`;
+  toast.textContent = text;
+  if (jobId) {
+    toast.style.cursor = "pointer";
+    toast.title = "クリックで詳細を表示";
+    toast.addEventListener("click", () => {
+      toast.remove();
+      switchTab("history");
+      loadHistory().then(() => openDetail(jobId));
+    });
+  }
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 10000);
+}
+
 async function refreshActiveJobs() {
   try {
     const body = await api("/api/jobs?limit=20");
+    for (const job of body.jobs) {
+      const prev = state.lastStatuses.get(job.id);
+      if (prev && ["queued", "running"].includes(prev)
+          && ["done", "error", "cancelled"].includes(job.status)) {
+        const name = job.label || job.id.slice(0, 8);
+        if (job.status === "done") {
+          showToast(`ジョブ「${name}」が完了しました`, "ok", job.id);
+        } else if (job.status === "error") {
+          showToast(`ジョブ「${name}」がエラーで終了しました`, "error", job.id);
+        } else {
+          showToast(`ジョブ「${name}」はキャンセルされました`, "warn", job.id);
+        }
+      }
+      state.lastStatuses.set(job.id, job.status);
+    }
+
     const active = body.jobs.filter((j) =>
       ["queued", "running"].includes(j.status));
     const container = $("#active-jobs");
@@ -316,13 +579,18 @@ async function refreshActiveJobs() {
     }
     container.innerHTML = active.map((job) => {
       const percent = Math.round((job.progress || 0) * 100);
-      return `<div class="row" style="margin-bottom:6px">
+      const logOpen = state.openLogs.has(job.id);
+      return `<div style="margin-bottom:8px">
+        <div class="row">
         <span class="status-chip status-${job.status}">${job.status}</span>
         <span>${job.model.toUpperCase()} ${job.label || job.id.slice(0, 8)}</span>
         <span class="progress-outer"><span class="progress-inner"
           style="width:${percent}%"></span></span>
         <span>${percent}% ${job.progress_text || ""}</span>
+        <button data-log="${job.id}">${logOpen ? "ログを閉じる" : "ログ"}</button>
         <button data-cancel="${job.id}" class="danger">キャンセル</button>
+        </div>
+        ${logOpen ? `<pre class="joblog" id="log|${job.id}">読み込み中...</pre>` : ""}
       </div>`;
     }).join("");
     container.querySelectorAll("button[data-cancel]").forEach((btn) =>
@@ -334,6 +602,21 @@ async function refreshActiveJobs() {
           setMessage("#run-message", error.message, "error");
         }
       }));
+    container.querySelectorAll("button[data-log]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.log;
+        if (state.openLogs.has(id)) state.openLogs.delete(id);
+        else state.openLogs.add(id);
+        refreshActiveJobs();
+      }));
+    for (const id of state.openLogs) {
+      const pre = document.getElementById(`log|${id}`);
+      if (!pre) continue;
+      api(`/api/jobs/${id}/log`).then((log) => {
+        pre.textContent = log.log.length ? log.log.join("\n")
+          : "（この計算のログ出力はまだありません）";
+      }).catch(() => {});
+    }
   } catch (_error) { /* サーバー未応答時は次回ポーリングで回復 */ }
 }
 
@@ -441,13 +724,34 @@ const PLOT_LAYOUT = {
 };
 
 function linePlot(div, traces, { title, xtitle, ytitle, logy = false,
-                                 shapes = [] } = {}) {
+                                 shapes = [], rangeslider = false } = {}) {
+  const xaxis = { title: { text: xtitle } };
+  if (rangeslider) xaxis.rangeslider = { thickness: 0.08 };
   Plotly.newPlot(div, traces, {
     ...PLOT_LAYOUT, title: { text: title, font: { size: 13 } },
-    xaxis: { title: { text: xtitle } },
+    xaxis,
     yaxis: { title: { text: ytitle }, type: logy ? "log" : "linear" },
     shapes,
   }, { responsive: true, displaylogo: false });
+}
+
+// 局所極大からIEDFピークを検出する（近接5ビン以内は高い方を残す）
+function findPeaks(x, y) {
+  const maxY = Math.max(...y);
+  if (!(maxY > 0)) return [];
+  const threshold = 0.05 * maxY;
+  const candidates = [];
+  for (let i = 1; i < y.length - 1; i++) {
+    if (y[i] >= threshold && y[i] > y[i - 1] && y[i] >= y[i + 1]) {
+      candidates.push({ x: x[i], y: y[i], i });
+    }
+  }
+  candidates.sort((a, b) => b.y - a.y);
+  const kept = [];
+  for (const peak of candidates) {
+    if (kept.every((q) => Math.abs(q.i - peak.i) > 5)) kept.push(peak);
+  }
+  return kept;
 }
 
 function centers(edges) {
@@ -551,15 +855,20 @@ async function openDetail(jobId) {
     if (job.status === "done") {
       plots = await api(`/api/jobs/${jobId}/plots`);
     }
-    renderDetail(job, plots);
+    let logLines = [];
+    try {
+      logLines = (await api(`/api/jobs/${jobId}/log`)).log || [];
+    } catch (_error) { /* ログなしは許容 */ }
+    renderDetail(job, plots, logLines);
     container.scrollIntoView({ behavior: "smooth" });
   } catch (error) {
     container.innerHTML = `<div class="card"><p class="message error">${error.message}</p></div>`;
   }
 }
 
-function renderDetail(job, plots) {
+function renderDetail(job, plots, logLines = []) {
   const container = $("#job-detail");
+  state.currentValidation = job.validation;
   let html = detailHeaderHtml(job);
   if (plots) {
     html += summaryTableHtml(plots.summary_rows, plots.model);
@@ -569,6 +878,7 @@ function renderDetail(job, plots) {
     if (plots.model === "1d") {
       html += `<div class="card"><h2>IEDF / 符号付きIADF</h2>
         <div id="plot-iedf" class="plot"></div>
+        <div id="iedf-peaks"></div>
         <div class="plot-half-wrap"><div id="plot-iadf" class="plot"></div>
         <div id="plot-iadf-log" class="plot"></div></div></div>`;
       html += `<div class="card"><h2>符号付きIAEDF</h2><div class="plot-half-wrap">`
@@ -593,6 +903,10 @@ function renderDetail(job, plots) {
           + `</div>`;
       }
     }
+  }
+  if (logLines.length) {
+    html += `<div class="card"><details><summary>実行ログ（${logLines.length}行）</summary>
+      <pre class="config-view">${logLines.join("\n")}</pre></details></div>`;
   }
   html += validationHtml(job.validation);
   html += `<div class="card"><h2>設定</h2>
@@ -623,10 +937,44 @@ function drawDetailPlots(plots) {
       { x: wf.phase_deg, y: wf.V_sg, name: "ground V_sg", line: { color: COLORS[1] } },
     ], { title: "シース電圧", xtitle: "RF phase [deg]", ytitle: "Sheath voltage [V]" });
 
-    linePlot("plot-iedf", plots.iedf.map((entry, i) => ({
-      x: centers(entry.edges_eV), y: entry.density,
-      name: `${entry.pressure_mTorr} mTorr`, line: { color: COLORS[i % COLORS.length] },
-    })), { title: "IEDF", xtitle: "Ion impact energy [eV]", ytitle: "IEDF [1/eV]" });
+    const iedfTraces = [];
+    const peakRows = [];
+    plots.iedf.forEach((entry, i) => {
+      const xs = centers(entry.edges_eV);
+      const color = COLORS[i % COLORS.length];
+      iedfTraces.push({ x: xs, y: entry.density,
+        name: `${entry.pressure_mTorr} mTorr`, line: { color } });
+      const peaks = findPeaks(xs, entry.density);
+      if (peaks.length) {
+        iedfTraces.push({
+          x: peaks.map((p) => p.x), y: peaks.map((p) => p.y),
+          mode: "markers", showlegend: false,
+          marker: { symbol: "triangle-down", size: 9, color },
+          hovertemplate: "peak %{x:.1f} eV<extra></extra>",
+        });
+      }
+      const top2 = peaks.slice(0, 2);
+      peakRows.push({
+        pressure: entry.pressure_mTorr,
+        peaks: [...peaks].sort((a, b) => a.x - b.x).slice(0, 6)
+          .map((p) => p.x.toFixed(1)).join(", "),
+        deltaE: top2.length === 2
+          ? Math.abs(top2[0].x - top2[1].x).toFixed(1) : "-",
+      });
+    });
+    linePlot("plot-iedf", iedfTraces,
+      { title: "IEDF（▼=検出ピーク）", xtitle: "Ion impact energy [eV]",
+        ytitle: "IEDF [1/eV]", rangeslider: true });
+    const riley = state.currentValidation
+      && state.currentValidation.riley_delta_E_eV;
+    document.getElementById("iedf-peaks").innerHTML = `<table><thead><tr>
+      <th class="num">p [mTorr]</th><th>検出ピーク [eV]</th>
+      <th class="num">ΔE（2大ピーク間） [eV]</th></tr></thead><tbody>
+      ${peakRows.map((r) => `<tr><td class="num">${r.pressure}</td>
+        <td>${r.peaks || "-"}</td><td class="num">${r.deltaE}</td></tr>`).join("")}
+      </tbody></table>
+      ${riley ? `<p class="muted">参考: Riley較正ブリッジのΔE見積もり
+        ${riley.toFixed(1)} eV（正弦波近似・無衝突の目安）</p>` : ""}`;
 
     const iadfTraces = (log) => plots.iadf.map((entry, i) => ({
       x: entry.angle_deg,
@@ -722,8 +1070,11 @@ async function runCompare() {
 }
 
 function renderCompare(body) {
+  state.compareBody = body;
   const container = $("#compare-result");
   let html = `<div class="card"><h2>IEDF比較</h2>
+    <label style="flex-direction:row;align-items:center;gap:6px">
+      <input type="checkbox" id="cmp-normalize"> 最大値=1で正規化</label>
     <div id="cmp-iedf" class="plot"></div></div>`;
   const hasIadf = body.jobs.some((j) => j.iadf && j.iadf.length);
   if (hasIadf) {
@@ -740,21 +1091,9 @@ function renderCompare(body) {
     : `<p class="muted">設定に差分はありません。</p>`}</div>`;
   container.innerHTML = html;
 
-  const iedfTraces = [];
-  body.jobs.forEach((job, jobIndex) => {
-    (job.iedf || []).forEach((entry, pressureIndex) => {
-      const color = COLORS[jobIndex % COLORS.length];
-      const dashes = ["solid", "dash", "dot", "dashdot"];
-      const y = entry.density || entry.wafer_density;
-      iedfTraces.push({
-        x: centers(entry.edges_eV), y,
-        name: `${job.label} ${entry.pressure_mTorr}mTorr`,
-        line: { color, dash: dashes[pressureIndex % dashes.length] },
-      });
-    });
-  });
-  linePlot("cmp-iedf", iedfTraces,
-    { title: "IEDF", xtitle: "Ion impact energy [eV]", ytitle: "IEDF [1/eV]" });
+  document.getElementById("cmp-normalize").addEventListener("change",
+    (event) => drawCompareIedf(event.target.checked));
+  drawCompareIedf(false);
 
   if (hasIadf) {
     const iadfTraces = [];
@@ -772,6 +1111,31 @@ function renderCompare(body) {
     linePlot("cmp-iadf", iadfTraces,
       { title: "符号付きIADF", xtitle: "Signed angle [deg]", ytitle: "IADF [1/deg]" });
   }
+}
+
+function drawCompareIedf(normalize) {
+  const body = state.compareBody;
+  if (!body) return;
+  const iedfTraces = [];
+  body.jobs.forEach((job, jobIndex) => {
+    (job.iedf || []).forEach((entry, pressureIndex) => {
+      const color = COLORS[jobIndex % COLORS.length];
+      const dashes = ["solid", "dash", "dot", "dashdot"];
+      let y = entry.density || entry.wafer_density;
+      if (normalize && y && y.length) {
+        const maxY = Math.max(...y);
+        if (maxY > 0) y = y.map((v) => v / maxY);
+      }
+      iedfTraces.push({
+        x: centers(entry.edges_eV), y,
+        name: `${job.label} ${entry.pressure_mTorr}mTorr`,
+        line: { color, dash: dashes[pressureIndex % dashes.length] },
+      });
+    });
+  });
+  linePlot("cmp-iedf", iedfTraces,
+    { title: "IEDF", xtitle: "Ion impact energy [eV]",
+      ytitle: normalize ? "IEDF（正規化）" : "IEDF [1/eV]" });
 }
 
 // ---------------- 管理者 ----------------
@@ -828,6 +1192,7 @@ async function init() {
   });
   $("#run-btn").addEventListener("click", runJob);
   $("#config-form").addEventListener("change", onConfigFormChange);
+  $("#config-form").addEventListener("click", onConfigFormClick);
   $("#filter-refresh").addEventListener("click", loadHistory);
   $("#filter-q").addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadHistory();

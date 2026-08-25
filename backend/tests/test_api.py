@@ -126,6 +126,30 @@ def test_cancel(client):
     assert job["status"] == "cancelled"
 
 
+def test_waveform_preview(client, waveform_csv_text):
+    response = client.post("/api/waveform-preview", json={
+        "waveform": {"mode": "sinusoid", "sinusoid_dc_V": -100.0,
+                     "sinusoid_amplitude_V": 50.0}})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["phase_deg"]) == 720
+    assert body["max_V"] == pytest.approx(-50.0, abs=0.5)
+    assert body["min_V"] == pytest.approx(-150.0, abs=0.5)
+
+    files = {"file": ("preview.csv", waveform_csv_text.encode("utf-8"),
+                      "text/csv")}
+    waveform_id = client.post("/api/waveforms", files=files).json()["id"]
+    response = client.post("/api/waveform-preview", json={
+        "waveform": {"mode": "csv", "waveform_id": waveform_id,
+                     "x_axis": "time_s"}})
+    assert response.status_code == 200
+    assert response.json()["min_V"] < response.json()["max_V"]
+
+    response = client.post("/api/waveform-preview", json={
+        "waveform": {"mode": "csv"}})
+    assert response.status_code == 400
+
+
 def test_admin_verify(client):
     assert client.post("/api/admin/verify",
                        json={"password": "wrong"}).status_code == 401

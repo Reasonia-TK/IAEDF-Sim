@@ -21,7 +21,9 @@
   <button data-tab="run" class="active">実行</button>
   <button data-tab="history">履歴</button>
   <button data-tab="compare">比較</button>
+  <a class="tab-link" href="physics.html" target="_blank">モデル解説</a>
 </nav>
+<div id="toasts"></div>
 
 <main>
   <!-- ===== 実行タブ ===== -->
@@ -38,6 +40,7 @@
         <label>投入者 <input id="job-user" placeholder="名前（任意）"></label>
         <button id="run-btn" class="primary">実行</button>
       </div>
+      <p id="time-estimate" class="muted"></p>
       <p id="run-message" class="message"></p>
     </div>
     <div id="config-form"></div>

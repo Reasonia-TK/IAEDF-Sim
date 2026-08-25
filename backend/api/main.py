@@ -48,6 +48,12 @@ class AdminVerifyRequest(BaseModel):
     password: str
 
 
+class WaveformPreviewRequest(BaseModel):
+    waveform: dict
+    wafer_waveform: Optional[dict] = None    # scaled_wafer用の参照波形
+    frequency_Hz: float = 13.56e6
+
+
 def job_to_dict(job: Job, *, with_detail=False) -> dict:
     row = {
         "id": job.id,
@@ -125,6 +131,45 @@ async def upload_waveform(file: UploadFile = File(...),
     session.commit()
     return {"id": waveform.id, "name": waveform.name,
             "sha256": waveform.sha256, "duplicated": False}
+
+
+@app.post("/api/waveform-preview")
+def waveform_preview(request: WaveformPreviewRequest,
+                     session: Session = Depends(get_session)):
+    """フォーム設定の波形を1周期サンプリングして返す（実行前プレビュー用）。"""
+    import numpy as np
+
+    from bkmcore.schemas import WaveformConfig
+    from bkmcore.waveform import make_waveform_function
+
+    omega = 2.0 * np.pi * request.frequency_Hz
+
+    def build(config_dict, wafer_func=None):
+        config = WaveformConfig.model_validate(config_dict)
+        if config.mode == "csv":
+            if config.waveform_id is None:
+                raise HTTPException(400, "csvモードには波形の選択が必要です。")
+            row = session.get(Waveform, int(config.waveform_id))
+            if row is None:
+                raise HTTPException(404, f"波形ID {config.waveform_id} が見つかりません。")
+            config.csv_text = row.content
+        try:
+            return make_waveform_function(config, omega, wafer_func=wafer_func)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(400, f"波形を解釈できません: {exc}")
+
+    wafer_func = None
+    if request.wafer_waveform is not None:
+        wafer_func = build(request.wafer_waveform)
+    func = build(request.waveform, wafer_func=wafer_func)
+    phase = np.linspace(0.0, 2.0 * np.pi, 720, endpoint=False)
+    voltage = np.asarray(func(phase), dtype=float)
+    return {"phase_deg": np.degrees(phase).tolist(),
+            "voltage_V": voltage.tolist(),
+            "min_V": float(voltage.min()), "max_V": float(voltage.max()),
+            "mean_V": float(voltage.mean())}
 
 
 @app.get("/api/waveforms")

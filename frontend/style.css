@@ -100,6 +100,29 @@ pre.config-view {
   background: #f6f8fa; border: 1px solid var(--border); border-radius: 6px;
   padding: 10px; font-size: 12px; overflow-x: auto; max-height: 380px;
 }
+.input-error { border-color: var(--danger) !important; background: #fff5f5 !important; }
+.tab-link {
+  color: #cfe0f5; padding: 10px 18px; text-decoration: none; font-size: 14px;
+  border-bottom: 3px solid transparent;
+}
+.tab-link:hover { color: #fff; }
+#toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 1000;
+  display: flex; flex-direction: column; gap: 8px; max-width: 340px;
+}
+.toast {
+  padding: 10px 14px; border-radius: 6px; color: #fff; font-size: 13px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.25); animation: toast-in 0.25s ease-out;
+}
+.toast-ok { background: var(--ok); }
+.toast-error { background: var(--danger); }
+.toast-warn { background: #8a6d1a; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+.joblog {
+  max-height: 180px; overflow: auto; font-size: 11px; background: #f6f8fa;
+  border: 1px solid var(--border); border-radius: 5px; padding: 8px;
+  margin: 6px 0 0; white-space: pre-wrap;
+}
 .validation-ok { color: var(--ok); font-weight: 600; }
 .validation-ng { color: var(--danger); font-weight: 600; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 13px; }

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>モデル解説 | BKM IEDF/IADF Simulator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230d47a1'/%3E%3Cpath d='M2 12 L6 4 L8 10 L10 6 L14 12' stroke='%23ffb300' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<style>
+  main.doc { max-width: 880px; line-height: 1.85; }
+  main.doc h2 {
+    font-size: 18px; margin: 34px 0 10px; padding-bottom: 6px;
+    border-bottom: 2px solid var(--accent);
+  }
+  main.doc h3 { font-size: 15px; margin: 22px 0 6px; }
+  main.doc p, main.doc li { font-size: 14px; }
+  .eq { margin: 10px 0; overflow-x: auto; }
+  .note {
+    background: #eef4fb; border-left: 4px solid var(--accent);
+    padding: 8px 14px; border-radius: 0 6px 6px 0; margin: 10px 0;
+  }
+  .caution {
+    background: #fdf3e3; border-left: 4px solid #b8860b;
+    padding: 8px 14px; border-radius: 0 6px 6px 0; margin: 10px 0;
+  }
+  table.sym td { border: none; padding: 2px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BKM IEDF/IADF Simulator — モデル解説</h1>
+  <div class="header-right"><a class="tab-link" href="index.html">← シミュレーターへ戻る</a></div>
+</header>
+<main class="doc">
+
+<h2>1. 全体像</h2>
+<p>
+本シミュレーターは、容量結合RFプラズマ（CCP）のシースを通過するイオンの
+<strong>エネルギー分布（IEDF）</strong>と<strong>角度分布（IADF/IAEDF）</strong>を、
+以下の3段階で計算する。論文ベンチマーク（Kawamura 1999, Wild&amp;Koidl 1991,
+Qin&amp;Wendt 2010, Seong 2022）で検証済みのコンポーネント構成である。
+</p>
+<ol>
+  <li><strong>グローバル回路モデル（KCL）</strong>: 駆動波形からプラズマ電位 \(V_p(t)\) とシース電圧を自己無撞着に決定</li>
+  <li><strong>規定電場シースモデル</strong>: シース内の瞬時電場プロファイルを解析形で規定（2Dでは Laplace 3基底 + 空間電荷補正）</li>
+  <li><strong>TPMC（Test Particle Monte Carlo）</strong>: シース端から入射したイオンを電場と中性粒子衝突のもとで追跡し、電極到達時の \((E, \theta)\) を集計</li>
+</ol>
+
+<h2>2. プラズマの基礎量</h2>
+<p>入力は電子温度 \(T_e\)、シース端密度 \(n_s\)、イオン質量 \(M\)、RF周波数 \(f\)。ここから</p>
+<div class="eq">
+$$u_B = \sqrt{\frac{e T_e}{M}}, \qquad
+J_i = e\, n_s u_B, \qquad
+J_{e,\mathrm{sat}} = e\, n_s \sqrt{\frac{e T_e}{2\pi m_e}}, \qquad
+\lambda_D = \sqrt{\frac{\varepsilon_0 T_e}{e\, n_s}}$$
+</div>
+<p>
+\(u_B\) はBohm速度で、TPMCの初期条件としてイオンはシース端で
+\(v_x = u_B\)（+イオン温度による熱広がり）を持つ。
+これは無衝突プレシースの電位降下 \(\simeq T_e/2\) をすでに含んだ入射条件である。
+静的な浮遊電位差の目安は
+\(\Delta V_f = T_e \ln(J_{e,\mathrm{sat}}/J_i)\)（Ar, 3 eVで約14 V）。
+</p>
+
+<h2>3. 自己無撞着プラズマ電位（KCL回路モデル）</h2>
+<p>
+プラズマバルクを浮遊する等電位節点とみなし、各電極シースを
+「伝導電流 + シース容量の変位電流」の並列素子としてキルヒホッフ電流則（KCL）を課す。
+1D（駆動電極 p / 接地電極 g、面積比 \(A_p/A_g\)）では
+</p>
+<div class="eq">
+$$A_p\!\left[J_{\mathrm{cond}}(V_{sp}) + C_s(V_{sp})\frac{d(V_p - V_e)}{dt}\right]
++ A_g\!\left[J_{\mathrm{cond}}(V_{sg}) + C_s(V_{sg})\frac{dV_p}{dt}\right] = 0$$
+</div>
+<p>ここで各シースの伝導電流はイオン飽和流と電子のBoltzmann応答の和:</p>
+<div class="eq">
+$$J_{\mathrm{cond}}(V_s) = J_i - J_{e,\mathrm{sat}}\, e^{-V_s / T_e}$$
+</div>
+<p>シース容量は瞬時Child-Langmuir幅 \(s(V_s)\) の平行平板近似:</p>
+<div class="eq">
+$$C_s = \frac{\varepsilon_0}{s(V_s)}, \qquad
+s(V_s) = \sqrt{\frac{4}{9}\,\varepsilon_0
+\sqrt{\frac{2e}{M}}\;\frac{V_s^{3/2}}{J_i}}
+\quad (\ge \lambda_D)$$
+</div>
+<p>
+この常微分方程式をRK4で周期定常（周期端点の \(V_p\) 差が許容値以下）まで積分する。
+2Dではウェハ・エッジリング・接地の3シースに拡張し、
+リングには独立な駆動波形（CSV/正弦波/ウェハ波形スケール）を与えられる。
+KCL残差は数値検証セルで \(10^{-14}\) オーダーであることを確認している。
+</p>
+<div class="note">
+波形はCSVで任意形状を与えられる。tailored waveform（多高調波合成）による
+単色IEDF・エネルギー制御性は Qin&amp;Wendt 2010 ベンチマークで確認済み。
+</div>
+
+<h2>4. シース電場モデル（1D）</h2>
+<h3>4.1 Child型電位プロファイル</h3>
+<p>シース内の電位を \(\phi \propto x^{\alpha}\)（既定 \(\alpha = 4/3\): 無衝突Child則）と規定し、電場は</p>
+<div class="eq">
+$$E(x, t) = \alpha\,\frac{V_s(t)}{s}\,\xi^{\alpha - 1},
+\qquad \xi = \frac{x - x_{\mathrm{front}}}{s_e}\in[0,1]$$
+</div>
+<p>二峰性IEDFのピーク間隔がBenoit-Cattin式と5%以内で一致することをKawamura 1999ベンチマークで確認している。</p>
+
+<h3>4.2 電子フロント運動シース（既定）</h3>
+<p>
+シース幅はRF位相とともに振動する。既定の moving_front モデルでは、
+瞬時シース電圧に応じた電子フロント位置を運動学的Child則で置く:
+</p>
+<div class="eq">
+$$s_e(t) = s_{\max}\left(\frac{V_{sp}(t)}{V_{sp,\max}}\right)^{p},
+\qquad p = 3/4$$
+</div>
+<p>
+フロントよりプラズマ側（\(x &lt; s_{\max} - s_e\)）は電場ゼロの準中性領域とする。
+イオン通過周期数が解析式
+\(\tau_{\mathrm{ion}} = 3\bar{s}\sqrt{M / 2e\bar{V}_s}\)
+と2–3%で一致することをWild&amp;Koidl 1991ベンチマーク拡張で確認している。
+</p>
+
+<h2>5. TPMC（1D3V）</h2>
+<p>各テスト粒子はRF位相を一様乱数で与えられ、シース端 \(x=0\) からBohm速度で入射し、運動方程式</p>
+<div class="eq">
+$$M\frac{dv_x}{dt} = e\,E(x, t)$$
+</div>
+<p>を時間刻み \(\Delta t = T_{RF}/N_{\mathrm{steps}}\) で積分する。1ステップの衝突確率は</p>
+<div class="eq">
+$$P_{\mathrm{coll}} = 1 - \exp\left[-n_g\,
+\sigma_{\mathrm{tot}}(E_{cm})\, v\, \Delta t\right],
+\qquad n_g = \frac{p}{k_B T_g}$$
+</div>
+<p>衝突種別はエネルギー依存断面積の比で決める:</p>
+<ul>
+  <li><strong>電荷交換（CX, backscat）</strong>: イオン速度を中性粒子の熱速度で置換 → 低エネルギーピーク群を生む</li>
+  <li><strong>等方弾性散乱（isotropic）</strong>: 重心系で等方散乱 → 角度広がりを生む</li>
+</ul>
+<p>
+断面積は既定でLXCat Phelpsデータベースの評価済みAr⁺/Ar断面積
+（backscat=CX相当、isotropic=等方弾性）をlog-log補間して用いる。
+電極到達時に \(E = \tfrac{1}{2}Mv^2/e\) と符号付き入射角
+\(\theta = \mathrm{atan2}(v_y, |v_x|)\) を記録する。
+</p>
+
+<h2>6. 2Dモデル（ウェハ + エッジリング）</h2>
+<h3>6.1 Laplace 3基底の重ね合わせ</h3>
+<p>
+段差付き表面（ウェハ高さ・リング高さ・tanh平滑化）を導体境界とし、
+x周期の2D Laplace方程式を赤黒SORで3回解く。それぞれ
+プラズマ上端・ウェハ・リングを1、他を0とした基底 \(\psi_p, \psi_w, \psi_r\) で、瞬時電位は
+</p>
+<div class="eq">
+$$\phi(x, y, t) = V_p(t)\,\psi_p + V_w(t)\,\psi_w + V_r(t)\,\psi_r
+\;(+\,\phi_{sc})$$
+</div>
+<p>
+3基底の和が active 領域で1になること（partition of unity、誤差 \(\sim 10^{-5}\)）が
+重ね合わせの妥当性チェックになる。0.6 mm段差での端傾き1.6–2.3°は
+Seong 2022 の実測（≤2.5°）と整合する。
+</p>
+
+<h3>6.2 周期平均空間電荷Poisson補正（既定ON）</h3>
+<p>
+TPMCで堆積した周期平均イオン密度 \(n_i\) と、全電位に対する位相平均Boltzmann電子
+\(n_e = n_s \langle \exp[(\phi - V_p)/T_e] \rangle_{\mathrm{phase}}\) から
+</p>
+<div class="eq">
+$$-\nabla^2 \phi_{sc} = \frac{e\,(n_i - n_e)}{\varepsilon_0}$$
+</div>
+<p>
+を解き、緩和係数0.35で混合しながら数回反復する（発散抑制のため補正上限と密度クリップあり）。
+Poisson補正により端傾きはLaplace版の1.2–1.5倍となり、実測に近づく。
+</p>
+
+<h2>7. 数値検証（各ジョブで自動実行）</h2>
+<ul>
+  <li><strong>エネルギー保存</strong>: 静的無衝突シースで平均エネルギー利得 = \(eV_s\)（相対誤差 \(10^{-4}\) 以下）</li>
+  <li><strong>衝突確率</strong>: 1ステップ最大衝突確率が推奨上限（既定0.05）以下</li>
+  <li><strong>KCL残差 / partition of unity / 空間電荷収束履歴</strong>（2D）</li>
+  <li><strong>Riley較正ブリッジ</strong>によるΔE見積もり:
+    <span class="eq">\(\Delta E = \dfrac{2e\tilde{V}_s}{\sqrt{1 + (\omega \tau_{\mathrm{ion}}/4)^2}}\)</span>
+    （正弦波近似の目安、TPMC比0.95–1.14）</li>
+</ul>
+
+<h2>8. 適用限界</h2>
+<div class="caution">
+<ul>
+  <li>規定電場近似のΔE誤差は±16%以内（ハイブリッド1D PICクロスチェック）。完全な自己無撞着PICではない</li>
+  <li>電子フロント位置は運動学的近似。変位電流と整合する自己無撞着フロントではない</li>
+  <li>\(n_s, T_e\) は入力値（パワーバランスから更新しない）。二次電子・電子慣性なし</li>
+  <li>弾性散乱は重心系等方（微分断面積の異方性なし）</li>
+  <li>2D: 誘電体リングの表面帯電は含まない（帯電はコーナー集束を増強する方向）。逆シース（\(V_s \le 0\)）は適用外</li>
+</ul>
+</div>
+
+<h2>9. 記号表</h2>
+<table class="sym">
+  <tr><td>\(V_p, V_e, V_w, V_r\)</td><td>プラズマ電位・駆動/ウェハ/リング電極電位</td></tr>
+  <tr><td>\(V_{sp}, V_{sg}, V_{sw}, V_{sr}\)</td><td>各シース電圧（プラズマ − 電極）</td></tr>
+  <tr><td>\(T_e\)</td><td>電子温度 [eV]</td></tr>
+  <tr><td>\(n_s\)</td><td>シース端プラズマ密度 [m⁻³]</td></tr>
+  <tr><td>\(u_B\)</td><td>Bohm速度</td></tr>
+  <tr><td>\(s_{\max}, s_e(t)\)</td><td>最大シース幅・瞬時電子フロント幅</td></tr>
+  <tr><td>\(\tau_{\mathrm{ion}}\)</td><td>イオンのシース通過時間</td></tr>
+  <tr><td>\(\omega\tau_{\mathrm{ion}}\)</td><td>≫1でイオンは平均シース電圧を感じ、ΔEが縮む</td></tr>
+  <tr><td>\(\theta = \mathrm{atan2}(v_y, |v_x|)\)</td><td>符号付き入射角（2Dでは面法線基準・外向き正）</td></tr>
+</table>
+
+<p class="muted" style="margin-top:30px">
+検証の詳細はリポジトリの <code>bkm_1d_sheath_tpmc.ipynb</code> /
+<code>bkm_2d_wafer_edge_ring_tpmc.ipynb</code> と
+<code>paper_benchmarks_README.md</code> を参照。
+</p>
+</main>
+
+<script src="vendor/katex/katex.min.js"></script>
+<script src="vendor/katex/auto-render.min.js"></script>
+<script>
+  renderMathInElement(document.querySelector("main"), {
+    delimiters: [
+      { left: "$$", right: "$$", display: true },
+      { left: "\\(", right: "\\)", display: false },
+    ],
+  });
+</script>
+</body>
+</html>
