@@ -32,6 +32,22 @@ BKM_PORT=8010 BKM_ADMIN_PASSWORD='...' docker compose up -d --build
 - 同時実行ジョブ数は `BKM_MAX_WORKERS`（既定2）で調整
 - ファイアウォールでポート8000のLAN内許可が必要な場合がある
 
+## Windowsでの起動
+
+**方法1: Docker Desktop** — Linuxと同じ `docker compose` コマンドがそのまま使える。
+
+**方法2: ネイティブ起動（Docker不要、Python 3.12が必要）**
+
+```powershell
+cd app
+.\start-windows.ps1 -Port 8010 -AdminPassword "任意のパスワード"
+```
+
+- 初回実行時に仮想環境の作成と依存インストールを自動で行う
+- 起動時にLAN内向けURL（`http://<このPCのIP>:<Port>/`）を表示する
+- LANに公開する場合はWindowsファイアウォールで該当ポートの受信許可が必要
+- 停止は Ctrl+C。結果は `app/results/`、DBは `app/db/` に保存される
+
 ## ローカル開発（Windows/Linux共通）
 
 ```bash
