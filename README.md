@@ -1,0 +1,85 @@
+# BKM IEDF/IADF Simulator Webアプリ
+
+`bkm_1d_sheath_tpmc.ipynb` / `bkm_2d_wafer_edge_ring_tpmc.ipynb` の検証済み物理モデルを
+そのまま抽出したWebアプリケーション。Linuxサーバー上のDockerで起動し、LAN内のブラウザから
+IEDF・符号付きIADF・IAEDFのシミュレーションを実行・閲覧・比較できる。
+
+## 機能
+
+- **実行**: 1D（シースTPMC）/ 2D（ウェハ+エッジリング）のパラメータフォーム。
+  駆動波形は正弦波またはCSVアップロード（sha256で重複排除しDBに永続化）
+- **ジョブ管理**: 非同期実行（子プロセス）、進捗表示、キャンセル、同時実行数制御
+- **履歴**: 全計算をSQLite内部DBに記録（自動削除なし）。モデル・状態・ラベルで
+  絞り込み検索。詳細画面で保存済みデータから全プロットを再描画、設定の再利用も可能
+- **比較**: 複数ジョブのIEDF/IADF重ね描きと設定差分テーブル
+- **検証**: ノートブックと同じ数値検証（エネルギー保存・KCL残差・衝突確率など）を
+  ジョブごとに実行し合否表示
+- **管理者権限**: 削除はBKM_ADMIN_PASSWORDによるBearer認証が必要。
+  削除は論理削除（DB記録・監査ログは残し、結果ファイルのみ物理削除）
+
+## Dockerでの起動（Linuxサーバー）
+
+```bash
+cd app
+BKM_ADMIN_PASSWORD='任意の管理者パスワード' docker compose up -d --build
+```
+
+- LAN内のブラウザから `http://<サーバーIP>:8000/` へアクセス
+- 計算結果は `./storage/results`、DBは `./storage/db` に永続化される
+- 同時実行ジョブ数は `BKM_MAX_WORKERS`（既定2）で調整
+- ファイアウォールでポート8000のLAN内許可が必要な場合がある
+
+## ローカル開発（Windows/Linux共通）
+
+```bash
+python -m venv .venv
+.venv/Scripts/pip install -r backend/requirements.txt pytest httpx   # Windows
+cd backend
+../.venv/Scripts/python -m uvicorn api.main:app --port 8000
+```
+
+### テスト
+
+```bash
+cd backend
+python -m pytest tests -m "not slow"   # 高速テスト（物理スモーク + API結合）
+python -m pytest tests -m slow         # ノートブック一致検証（1Dフル実行 約40s）
+```
+
+slowテストは既定設定・既定シードでノートブックの実行済み出力と比較し、
+到達数・脱出数・CX率レベルまでの数値一致を確認する。
+
+## 構成
+
+```
+app/
+├─ backend/
+│  ├─ bkmcore/      # 物理コア（ノートブックから抽出、フレームワーク非依存）
+│  ├─ api/          # FastAPI + SQLite + ジョブマネージャ
+│  └─ tests/
+├─ frontend/        # 静的SPA（Plotlyローカル同梱、ビルド不要）
+├─ data/            # 断面積CSV・サンプル波形
+├─ storage/         # Dockerボリューム（results/db）
+└─ Dockerfile / docker-compose.yml
+```
+
+## 主要API
+
+| メソッド | パス | 説明 |
+|---|---|---|
+| GET | `/api/defaults/{1d,2d}` | 既定設定（ノートブックと同値） |
+| POST | `/api/waveforms` | 波形CSVアップロード |
+| POST | `/api/jobs` | ジョブ投入 `{model, label, submitted_by, config}` |
+| GET | `/api/jobs` | 履歴一覧（model/status/q/limit/offset） |
+| GET | `/api/jobs/{id}` | 状態・進捗・設定・検証 |
+| GET | `/api/jobs/{id}/plots` | プロット用JSON |
+| GET | `/api/jobs/{id}/download/{npz,config,plots}` | ダウンロード |
+| POST | `/api/jobs/{id}/cancel` | キャンセル |
+| DELETE | `/api/jobs/{id}` | 論理削除（**管理者のみ**、Bearer認証） |
+| GET | `/api/compare?ids=a,b` | 複数ジョブ比較（設定diff付き） |
+| GET | `/api/audit` | 監査ログ（管理者のみ） |
+
+## 適用限界
+
+物理モデルの適用限界はノートブック末尾の「適用限界と調整の目安」に準じる
+（規定電場近似ΔE誤差±16%、二次電子・電子慣性なし、など）。

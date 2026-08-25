@@ -1,0 +1,15 @@
+services:
+  bkm:
+    build: .
+    container_name: bkm-simulator
+    ports:
+      - "8000:8000"
+    environment:
+      # 管理者パスワード（必須: 未設定だと削除等の管理操作が無効）
+      - BKM_ADMIN_PASSWORD=${BKM_ADMIN_PASSWORD:-}
+      # 同時実行ジョブ数（サーバーのコア数に応じて調整）
+      - BKM_MAX_WORKERS=${BKM_MAX_WORKERS:-2}
+    volumes:
+      - ./storage/results:/data/results
+      - ./storage/db:/data/db
+    restart: unless-stopped
