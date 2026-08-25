@@ -1,4 +1,4 @@
-﻿# BKM IEDF/IADF Simulator をWindowsでネイティブ起動する（Docker不要）
+﻿# KTC model IEDF/IADF Simulator をWindowsでネイティブ起動する（Docker不要）
 # 使い方:  .\start-windows.ps1 -Port 8010 -AdminPassword "secret" -MaxWorkers 2
 param(
     [int]$Port = 8000,

@@ -1,4 +1,4 @@
-# BKM IEDF/IADF Simulator Webアプリ
+# KTC model IEDF/IADF Simulator Webアプリ
 
 `bkm_1d_sheath_tpmc.ipynb` / `bkm_2d_wafer_edge_ring_tpmc.ipynb` の検証済み物理モデルを
 そのまま抽出したWebアプリケーション。Linuxサーバー上のDockerで起動し、LAN内のブラウザから

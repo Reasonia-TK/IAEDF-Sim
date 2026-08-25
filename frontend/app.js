@@ -1,4 +1,4 @@
-/* BKM IEDF/IADF Simulator frontend */
+/* KTC model IEDF/IADF Simulator frontend */
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);

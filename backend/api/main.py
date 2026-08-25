@@ -32,7 +32,7 @@ async def lifespan(_app: FastAPI):
     manager.shutdown()
 
 
-app = FastAPI(title="BKM IEDF/IADF Simulator", lifespan=lifespan)
+app = FastAPI(title="KTC model IEDF/IADF Simulator", lifespan=lifespan)
 
 
 # ---------------- スキーマ ----------------
