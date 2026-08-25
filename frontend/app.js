@@ -164,6 +164,16 @@ function switchTab(name) {
 
 function inputId(group, key) { return `f|${group}|${key}`; }
 
+// 大きい/小さい数値は指数表記で表示する（parseFloatは指数表記入力を受け付ける）
+function fmtNum(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return value;
+  const magnitude = Math.abs(value);
+  if (magnitude !== 0 && (magnitude >= 1e5 || magnitude < 1e-3)) {
+    return value.toExponential().replace("e+", "e");
+  }
+  return String(value);
+}
+
 function fieldInput(group, key, value) {
   const id = inputId(group, key);
   const { text, tip } = fieldLabelText(key);
@@ -190,7 +200,7 @@ function fieldInput(group, key, value) {
   if (value === null) {
     return wrap(`<input id="${id}" value="" placeholder="自動">`);
   }
-  return wrap(`<input id="${id}" value="${value}">`);
+  return wrap(`<input id="${id}" value="${fmtNum(value)}">`);
 }
 
 function waveformGroupHtml(group, values, isRing) {
@@ -445,8 +455,9 @@ function readField(group, key, defaultValue) {
   if (typeof defaultValue === "number") {
     const parsed = parseFloat(raw);
     if (!Number.isFinite(parsed)) throw new Error(`${group}.${key} が数値ではありません`);
+    // parseIntは指数表記("3e4")を誤読するためMath.roundで整数化する
     return Number.isInteger(defaultValue) && Number.isInteger(parsed)
-      ? parseInt(raw, 10) : parsed;
+      ? Math.round(parsed) : parsed;
   }
   if (defaultValue === null) {
     if (raw === "") return null;
