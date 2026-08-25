@@ -38,6 +38,8 @@ class Job(Base):
     result_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # 2Dコレクタ定義（実行後に定義・保存できる集計範囲）
+    collectors_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Waveform(Base):
@@ -77,6 +79,17 @@ def _set_sqlite_pragma(dbapi_connection, _record):
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 Base.metadata.create_all(engine)
+
+# 既存DBへの追加列マイグレーション（存在すれば無視）
+from sqlalchemy import text as _sql_text  # noqa: E402
+
+with engine.connect() as _conn:
+    try:
+        _conn.execute(_sql_text(
+            "ALTER TABLE jobs ADD COLUMN collectors_json TEXT"))
+        _conn.commit()
+    except Exception:
+        pass  # 列が既に存在する
 
 
 def get_session():

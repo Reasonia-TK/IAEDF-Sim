@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WaveformConfig(BaseModel):
@@ -109,6 +109,27 @@ class GeometryConfig(BaseModel):
     ring_height_m: float = 0.25e-3
     step_smoothing_width_m: float = 0.10e-3
     top_clearance_factor: float = 1.0
+    # 表面モード: "step"=従来の段差(tanh平滑) / "profile"=制御点折れ線(スケッチ)
+    surface_mode: Literal["step", "profile"] = "step"
+    # profileモードの制御点 [[x_m, y_m], ...]（xは[0, periodic_length)、周期線形補間）
+    profile_points_m: list[list[float]] = Field(default_factory=list)
+    # profileモードの表面平滑化幅 [m]（0で平滑化なし）
+    profile_smoothing_m: float = 0.0
+
+    @model_validator(mode="after")
+    def _check_profile(self) -> "GeometryConfig":
+        if self.surface_mode == "profile":
+            if len(self.profile_points_m) < 3:
+                raise ValueError("profileモードには制御点が3点以上必要です。")
+            for point in self.profile_points_m:
+                if len(point) != 2:
+                    raise ValueError("profile_points_mは[x, y]の組で指定してください。")
+                if not (0.0 <= point[0] < self.periodic_length_m):
+                    raise ValueError(
+                        "制御点xは[0, periodic_length_m)の範囲で指定してください。")
+                if point[1] <= 0.0:
+                    raise ValueError("制御点の高さyは正の値にしてください。")
+        return self
 
 
 class Field2DConfig(BaseModel):

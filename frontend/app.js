@@ -32,6 +32,7 @@ const GROUP_LABELS = {
 const ENUMS = {
   "sheath.model": ["moving_front", "static_width"],
   "gas.cross_section_source": ["lxcat_phelps", "approximation"],
+  "geometry.surface_mode": ["step", "profile"],
   x_axis: ["time_s", "time_ns", "time_us", "phase_deg", "phase_rad"],
 };
 
@@ -108,6 +109,8 @@ const LABELS = {
   max_abs_correction_V: ["補正上限 [V]", ""],
   poisson_tolerance_V: ["Poisson収束判定 [V]", ""],
   poisson_max_iterations: ["Poisson最大反復", ""],
+  surface_mode: ["表面モード", "step=段差（従来） / profile=制御点スケッチ"],
+  profile_smoothing_m: ["表面平滑化幅 [m]", "profileモードの折れ線を滑らかにする（0=無効）"],
   edge_exclusion_m: ["端除外幅 [m]", "統計から除くウェハ最端部"],
   edge_band_m: ["端帯域幅 [m]", "端傾き平均を取る帯"],
   bin_width_m: ["距離ビン幅 [m]", ""],
@@ -258,7 +261,8 @@ function buildForm() {
     const inner = isWaveformGroup(group)
       ? waveformGroupHtml(group, values, group === "ring_waveform")
       : Object.entries(values)
-          .filter(([k]) => !["csv_text", "waveform_id"].includes(k))
+          .filter(([k]) => !["csv_text", "waveform_id",
+                             "profile_points_m"].includes(k))
           .map(([k, v]) => fieldInput(group, k, v)).join("");
     let extra = "";
     if (isWaveformGroup(group)) {
@@ -267,7 +271,23 @@ function buildForm() {
         <span id="wfstat|${group}" class="muted"></span></div>
         <div id="wfprev|${group}" class="plot hidden" style="min-height:240px"></div>`;
     } else if (group === "geometry") {
-      extra = `<div id="geo-preview" class="plot" style="min-height:260px"></div>`;
+      extra = `
+        <div class="row" style="margin:6px 0 4px">
+          <label>プリセット
+            <select id="geo-preset">
+              <option value="">選択して適用...</option>
+              <option value="from_step">段差（現在のstep設定から生成）</option>
+              <option value="taper">テーパーリング</option>
+              <option value="recess">リセスウェハ</option>
+              <option value="groove">溝付きリング</option>
+            </select>
+          </label>
+          <span class="muted" id="geo-hint"></span>
+        </div>
+        <div id="geo-editor"></div>
+        <details style="margin-top:6px"><summary class="muted">制御点を数値で編集（x_mm, y_mm を1行に1点）</summary>
+          <textarea id="geo-points-text" rows="6" style="width:100%;font-family:monospace;font-size:12px"></textarea>
+        </details>`;
     }
     const card = document.createElement("div");
     card.className = "card config-group";
@@ -275,7 +295,13 @@ function buildForm() {
       <div class="config-grid" id="grid|${group}">${inner}</div>${extra}</details>`;
     container.appendChild(card);
   }
-  if (state.model === "2d") updateGeometryPreview();
+  if (state.model === "2d") {
+    const preset = config.geometry && config.geometry.profile_points_m;
+    state.profilePoints = (preset && preset.length >= 3)
+      ? preset.map((p) => [p[0], p[1]]) : null;
+    renderGeometryEditor();
+    syncGeoTextarea();
+  }
   updateTimeEstimate();
 
 }
@@ -296,8 +322,19 @@ function onConfigFormChange(event) {
     handleWaveformUpload(target);
     return;
   }
+  if (target.id === "geo-preset") {
+    if (target.value) {
+      applyGeoPreset(target.value);
+      target.value = "";
+    }
+    return;
+  }
+  if (target.id === "geo-points-text") {
+    parseGeoTextarea();
+    return;
+  }
   if (target.id && target.id.startsWith("f|geometry|")) {
-    updateGeometryPreview();
+    renderGeometryEditor();
   }
   updateTimeEstimate();
 }
@@ -341,37 +378,293 @@ async function previewWaveform(group) {
   }
 }
 
-function updateGeometryPreview() {
-  const div = document.getElementById("geo-preview");
-  if (!div || state.model !== "2d") return;
+// ---------------- 2Dスケッチエディタ（表面プロファイル） ----------------
+
+function readGeo() {
   const defaults = state.defaults["2d"].geometry;
-  let geo;
-  try {
-    geo = Object.fromEntries(Object.keys(defaults).map((key) =>
-      [key, readField("geometry", key, defaults[key])]));
-  } catch (_error) {
-    return;   // 入力途中の数値エラーは無視
+  const geo = {};
+  for (const key of Object.keys(defaults)) {
+    if (key === "profile_points_m") continue;
+    try {
+      geo[key] = readField("geometry", key, defaults[key]);
+    } catch (_error) {
+      geo[key] = defaults[key];
+    }
   }
-  const n = 400;
-  const xs = [], ys = [];
-  const width = Math.max(geo.step_smoothing_width_m, 1e-12);
-  for (let i = 0; i <= n; i++) {
-    const x = geo.periodic_length_m * i / n;
-    const window = 0.5 * (Math.tanh((x - geo.wafer_left_m) / width)
-      - Math.tanh((x - geo.wafer_right_m) / width));
-    const s = geo.ring_height_m
-      + (geo.wafer_height_m - geo.ring_height_m) * window;
-    xs.push(x * 1e3);
-    ys.push(s * 1e3);
+  return geo;
+}
+
+function currentSurfaceMode() {
+  const node = document.getElementById(inputId("geometry", "surface_mode"));
+  return node ? node.value : "step";
+}
+
+function defaultProfilePoints(geo) {
+  const w = Math.max(geo.step_smoothing_width_m, 0.05e-3);
+  return [
+    [0.0, geo.ring_height_m],
+    [geo.wafer_left_m - w, geo.ring_height_m],
+    [geo.wafer_left_m + w, geo.wafer_height_m],
+    [geo.wafer_right_m - w, geo.wafer_height_m],
+    [geo.wafer_right_m + w, geo.ring_height_m],
+  ];
+}
+
+// バックエンドと同じ表面計算（step: tanh / profile: 周期線形補間+ガウス平滑）
+function surfaceDense(geo, mode, points, n = 480) {
+  const L = geo.periodic_length_m;
+  const xs = Array.from({ length: n }, (_v, i) => L * i / n);
+  let ys;
+  if (mode === "profile" && points.length >= 3) {
+    const sorted = [...points].sort((a, b) => a[0] - b[0]);
+    const px = sorted.map((p) => p[0]).concat([sorted[0][0] + L]);
+    const py = sorted.map((p) => p[1]).concat([sorted[0][1]]);
+    const interp = (x) => {
+      let q = x % L;
+      if (q < px[0]) q += L;
+      let i = 0;
+      while (i < px.length - 2 && px[i + 1] < q) i++;
+      const t = (q - px[i]) / Math.max(px[i + 1] - px[i], 1e-12);
+      return py[i] + t * (py[i + 1] - py[i]);
+    };
+    ys = xs.map(interp);
+    if (geo.profile_smoothing_m > 0) {
+      const sigma = geo.profile_smoothing_m / (L / n);
+      const half = Math.min(Math.ceil(4 * sigma), n >> 1);
+      const kernel = [];
+      let sum = 0;
+      for (let k = -half; k <= half; k++) {
+        const v = Math.exp(-0.5 * (k / sigma) ** 2);
+        kernel.push(v);
+        sum += v;
+      }
+      ys = ys.map((_v, i) => kernel.reduce((acc, kv, j) =>
+        acc + kv * ys[(i + j - half + n) % n], 0) / sum);
+    }
+  } else {
+    const width = Math.max(geo.step_smoothing_width_m, 1e-12);
+    ys = xs.map((x) => geo.ring_height_m
+      + (geo.wafer_height_m - geo.ring_height_m) * 0.5
+      * (Math.tanh((x - geo.wafer_left_m) / width)
+         - Math.tanh((x - geo.wafer_right_m) / width)));
   }
-  const shapes = [geo.wafer_left_m, geo.wafer_right_m].map((x) => ({
-    type: "line", x0: x * 1e3, x1: x * 1e3, yref: "paper", y0: 0, y1: 1,
-    line: { color: "#999", width: 1, dash: "dot" },
-  }));
-  linePlot(div, [{ x: xs, y: ys, name: "表面高さ s(x)",
-    fill: "tozeroy", line: { color: COLORS[0] } }], {
-    title: "2D形状プレビュー（点線=ウェハ端、左右はリング領域）",
-    xtitle: "x [mm]", ytitle: "高さ [mm]", shapes,
+  return { xs, ys };
+}
+
+function syncGeoTextarea() {
+  const area = document.getElementById("geo-points-text");
+  if (!area || !state.profilePoints) return;
+  area.value = state.profilePoints
+    .map((p) => `${(p[0] * 1e3).toFixed(3)}, ${(p[1] * 1e3).toFixed(3)}`)
+    .join("\n");
+}
+
+function parseGeoTextarea() {
+  const area = document.getElementById("geo-points-text");
+  if (!area) return;
+  const points = area.value.split("\n").map((line) =>
+    line.split(",").map((s) => parseFloat(s.trim()) * 1e-3))
+    .filter((p) => p.length === 2 && p.every(Number.isFinite));
+  if (points.length >= 3) {
+    state.profilePoints = points;
+    renderGeometryEditor();
+  }
+}
+
+function applyGeoPreset(name) {
+  const geo = readGeo();
+  const L = geo.periodic_length_m;
+  const w = Math.max(geo.step_smoothing_width_m, 0.05e-3);
+  const wafer = geo.wafer_height_m, ring = geo.ring_height_m;
+  const left = geo.wafer_left_m, right = geo.wafer_right_m;
+  const presets = {
+    from_step: defaultProfilePoints(geo),
+    taper: [[0.0, ring], [left, wafer], [right, wafer],
+            [right + 0.15 * (L - right), ring]],
+    recess: [[0.0, Math.max(wafer, ring)],
+             [left - w, Math.max(wafer, ring)],
+             [left + w, Math.max(wafer, ring) * 0.55],
+             [right - w, Math.max(wafer, ring) * 0.55],
+             [right + w, Math.max(wafer, ring)]],
+    groove: [[0.0, ring], [0.35 * left, ring], [0.5 * left, ring * 0.35],
+             [0.65 * left, ring], [left - w, ring], [left + w, wafer],
+             [right - w, wafer], [right + w, ring],
+             [right + 0.35 * (L - right), ring],
+             [right + 0.5 * (L - right), ring * 0.35],
+             [right + 0.65 * (L - right), ring]],
+  };
+  if (!presets[name]) return;
+  state.profilePoints = presets[name];
+  const modeSelect = document.getElementById(
+    inputId("geometry", "surface_mode"));
+  if (modeSelect) modeSelect.value = "profile";
+  renderGeometryEditor();
+  syncGeoTextarea();
+}
+
+function renderGeometryEditor() {
+  const host = document.getElementById("geo-editor");
+  if (!host || state.model !== "2d") return;
+  const geo = readGeo();
+  const mode = currentSurfaceMode();
+  if (mode === "profile"
+      && (!state.profilePoints || state.profilePoints.length < 3)) {
+    state.profilePoints = defaultProfilePoints(geo);
+    syncGeoTextarea();
+  }
+  const hint = document.getElementById("geo-hint");
+  if (hint) {
+    hint.textContent = mode === "profile"
+      ? "点をドラッグで移動 / 曲線上ダブルクリックで追加 / 点を右クリックで削除 / 橙帯=ウェハ範囲（ドラッグ可）"
+      : "橙帯のウェハ端はドラッグで調整可。profileモードで自由形状を編集できます";
+  }
+  const L = geo.periodic_length_m;
+  const points = state.profilePoints || [];
+  const W = 900, H = 280, padL = 48, padR = 14, padT = 14, padB = 32;
+  const sx = (m) => padL + (m / L) * (W - padL - padR);
+  const sy = (m, yMax) => H - padB - (m / yMax) * (H - padB - padT);
+
+  function computeCurve() {
+    const dense = surfaceDense(geo, mode, points);
+    const peak = Math.max(...dense.ys,
+      ...(mode === "profile" ? points.map((p) => p[1]) : [0]));
+    const yMax = peak * 1.55 + 1e-9;
+    let d = dense.xs.map((x, i) =>
+      `${i ? "L" : "M"}${sx(x).toFixed(1)},${sy(dense.ys[i], yMax).toFixed(1)}`)
+      .join("");
+    d += `L${sx(L).toFixed(1)},${sy(dense.ys[0], yMax).toFixed(1)}`
+      + `L${sx(L).toFixed(1)},${H - padB}L${padL},${H - padB}Z`;
+    return { d, yMax };
+  }
+
+  const curve = computeCurve();
+  const yMax0 = curve.yMax;
+  const ticksX = [];
+  for (let mm = 0; mm <= L * 1e3; mm += 2) {
+    ticksX.push(`<line x1="${sx(mm * 1e-3)}" x2="${sx(mm * 1e-3)}"
+      y1="${H - padB}" y2="${H - padB + 4}" stroke="#889"/>
+      <text x="${sx(mm * 1e-3)}" y="${H - 8}" font-size="11" fill="#667"
+      text-anchor="middle">${mm}</text>`);
+  }
+  const yTickVal = yMax0 * 0.6;
+  host.innerHTML = `
+  <svg id="geo-svg" viewBox="0 0 ${W} ${H}"
+       style="width:100%;background:#fbfcfe;border:1px solid var(--border);
+              border-radius:6px;touch-action:none;user-select:none">
+    <rect id="geo-wafer-band" fill="#ff9800" opacity="0.13"
+      x="${sx(geo.wafer_left_m)}" y="${padT}"
+      width="${sx(geo.wafer_right_m) - sx(geo.wafer_left_m)}"
+      height="${H - padB - padT}"/>
+    <path id="geo-path" d="${curve.d}" fill="rgba(21,101,192,0.14)"
+      stroke="#1565c0" stroke-width="2"/>
+    <line data-handle="wafer_left_m" x1="${sx(geo.wafer_left_m)}"
+      x2="${sx(geo.wafer_left_m)}" y1="${padT}" y2="${H - padB}"
+      stroke="#e65100" stroke-width="8" opacity="0.35"
+      style="cursor:ew-resize"/>
+    <line data-handle="wafer_right_m" x1="${sx(geo.wafer_right_m)}"
+      x2="${sx(geo.wafer_right_m)}" y1="${padT}" y2="${H - padB}"
+      stroke="#e65100" stroke-width="8" opacity="0.35"
+      style="cursor:ew-resize"/>
+    ${mode === "profile" ? points.map((p, i) =>
+      `<circle data-point="${i}" cx="${sx(p[0])}" cy="${sy(p[1], yMax0)}"
+        r="7" fill="#1565c0" stroke="#fff" stroke-width="2"
+        style="cursor:grab"/>`).join("") : ""}
+    ${ticksX.join("")}
+    <text x="${W / 2}" y="${H - 8}" font-size="11" fill="#667"
+      transform="translate(30,0)">x [mm]</text>
+    <text x="10" y="${sy(yTickVal, yMax0)}" font-size="11" fill="#667">
+      ${(yTickVal * 1e3).toFixed(2)}mm</text>
+    <text x="${sx(0.5 * (geo.wafer_left_m + geo.wafer_right_m))}"
+      y="${padT + 14}" font-size="12" fill="#b26500"
+      text-anchor="middle">ウェハ</text>
+  </svg>`;
+
+  const svg = host.querySelector("#geo-svg");
+  const toLocal = (event) => {
+    const rect = svg.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) / rect.width * W,
+             y: (event.clientY - rect.top) / rect.height * H };
+  };
+  const invX = (px) => (px - padL) / (W - padL - padR) * L;
+  const invY = (py, yMax) => (H - padB - py) / (H - padB - padT) * yMax;
+  let drag = null;
+
+  function refresh() {
+    const c = computeCurve();
+    svg.querySelector("#geo-path").setAttribute("d", c.d);
+    svg.querySelectorAll("circle[data-point]").forEach((circle) => {
+      const p = points[+circle.dataset.point];
+      circle.setAttribute("cx", sx(p[0]));
+      circle.setAttribute("cy", sy(p[1], c.yMax));
+    });
+    const band = svg.querySelector("#geo-wafer-band");
+    band.setAttribute("x", sx(geo.wafer_left_m));
+    band.setAttribute("width",
+      sx(geo.wafer_right_m) - sx(geo.wafer_left_m));
+    svg.querySelectorAll("line[data-handle]").forEach((line) => {
+      const v = geo[line.dataset.handle];
+      line.setAttribute("x1", sx(v));
+      line.setAttribute("x2", sx(v));
+    });
+  }
+
+  svg.addEventListener("pointerdown", (event) => {
+    const target = event.target;
+    if (target.dataset.point !== undefined) {
+      drag = { type: "point", index: +target.dataset.point };
+    } else if (target.dataset.handle) {
+      drag = { type: "handle", key: target.dataset.handle };
+    } else {
+      return;
+    }
+    try {
+      svg.setPointerCapture(event.pointerId);
+    } catch (_error) { /* 合成イベント等でcapture不可でもドラッグは動く */ }
+    event.preventDefault();
+  });
+  svg.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    const local = toLocal(event);
+    const xm = Math.min(Math.max(invX(local.x), 0), L * 0.9999);
+    if (drag.type === "point") {
+      const ym = Math.max(invY(local.y, computeCurve().yMax), 0.02e-3);
+      points[drag.index] = [xm, ym];
+    } else {
+      geo[drag.key] = xm;
+      const node = document.getElementById(inputId("geometry", drag.key));
+      if (node) node.value = fmtNum(Number(xm.toPrecision(5)));
+    }
+    refresh();
+  });
+  svg.addEventListener("pointerup", () => {
+    if (drag) {
+      drag = null;
+      syncGeoTextarea();
+    }
+  });
+  svg.addEventListener("dblclick", (event) => {
+    if (mode !== "profile") return;
+    const local = toLocal(event);
+    const xm = Math.min(Math.max(invX(local.x), 0), L * 0.9999);
+    const dense = surfaceDense(geo, mode, points);
+    const idx = Math.round(xm / L * dense.xs.length) % dense.xs.length;
+    points.push([xm, dense.ys[idx]]);
+    state.profilePoints = points;
+    renderGeometryEditor();
+    syncGeoTextarea();
+  });
+  svg.addEventListener("contextmenu", (event) => {
+    const target = event.target;
+    if (mode === "profile" && target.dataset.point !== undefined
+        && points.length > 3) {
+      event.preventDefault();
+      points.splice(+target.dataset.point, 1);
+      state.profilePoints = points;
+      renderGeometryEditor();
+      syncGeoTextarea();
+    } else if (target.dataset.point !== undefined) {
+      event.preventDefault();  // 3点未満にはしない
+    }
   });
 }
 
@@ -511,6 +804,14 @@ function collectConfig() {
   }
   if (errors.length) {
     throw new Error(`入力を確認してください: ${errors.join(" / ")}`);
+  }
+  if (state.model === "2d" && config.geometry) {
+    config.geometry.profile_points_m =
+      (state.profilePoints || []).map((p) => [p[0], p[1]]);
+    if (config.geometry.surface_mode === "profile"
+        && config.geometry.profile_points_m.length < 3) {
+      throw new Error("profileモードには制御点が3点以上必要です。");
+    }
   }
   return config;
 }
@@ -902,6 +1203,23 @@ function renderDetail(job, plots, logLines = []) {
         <div class="plot-half-wrap"><div id="plot-energy-x" class="plot"></div>
         <div id="plot-angle-x" class="plot"></div></div>
         <div id="plot-tilt" class="plot"></div></div>`;
+      html += `<div class="card"><h2>コレクタ（任意範囲のIEDF/IADF集計）</h2>
+        <p class="muted">保存済みの全粒子データから、指定したx範囲に入射した
+        イオンの分布を再計算なしで集計します。範囲は何度でも変更できます。</p>
+        <div id="collector-list"></div>
+        <div class="row" style="margin-top:8px">
+          <button id="col-add">範囲を追加</button>
+          <button id="col-select">フラックス図からドラッグ選択</button>
+          <button id="col-eval" class="primary">集計</button>
+          <button id="col-save">ジョブに保存</button>
+          <button id="col-csv" disabled>CSVダウンロード</button>
+          <label>圧力 <select id="col-pressure"></select></label>
+        </div>
+        <p id="col-message" class="message"></p>
+        <div id="col-stats"></div>
+        <div class="plot-half-wrap">
+          <div id="col-iedf" class="plot hidden"></div>
+          <div id="col-iadf" class="plot hidden"></div></div></div>`;
       html += `<div class="card"><h2>電極別IEDF / ウェハIAEDF</h2>
         <div id="plot-iedf" class="plot"></div><div class="plot-half-wrap">`
         + plots.iaedf.map((_e, i) =>
@@ -933,7 +1251,237 @@ function renderDetail(job, plots, logLines = []) {
       `ジョブ${job.id.slice(0, 8)}の設定を読み込みました`, "ok");
   });
 
-  if (plots) drawDetailPlots(plots);
+  if (plots) {
+    drawDetailPlots(plots);
+    if (plots.model === "2d") initCollectors(job);
+  }
+}
+
+// ---------------- コレクタ（2D詳細画面） ----------------
+
+function initCollectors(job) {
+  state.currentJobId = job.id;
+  state.collectorEval = null;
+  const geo = job.config.geometry || {};
+  const defaults = [{
+    label: "ウェハ中央",
+    x_min_m: (geo.wafer_left_m ?? 3e-3) + 1e-3,
+    x_max_m: (geo.wafer_right_m ?? 13e-3) - 1e-3,
+  }];
+  state.collectors = (job.collectors && job.collectors.length)
+    ? job.collectors.map((c) => ({ ...c })) : defaults;
+  renderCollectorList();
+
+  $("#col-add").addEventListener("click", () => {
+    state.collectors.push({
+      label: `C${state.collectors.length + 1}`,
+      x_min_m: geo.wafer_left_m ?? 3e-3,
+      x_max_m: geo.wafer_right_m ?? 13e-3,
+    });
+    renderCollectorList();
+    drawCollectorBands();
+  });
+  $("#col-select").addEventListener("click", armCollectorSelect);
+  $("#col-eval").addEventListener("click", evaluateCollectors);
+  $("#col-save").addEventListener("click", saveCollectors);
+  $("#col-csv").addEventListener("click", downloadCollectorCsv);
+  $("#col-pressure").addEventListener("change", renderCollectorResults);
+  $("#collector-list").addEventListener("change", readCollectorList);
+  $("#collector-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-col-del]");
+    if (!button) return;
+    state.collectors.splice(+button.dataset.colDel, 1);
+    renderCollectorList();
+    drawCollectorBands();
+  });
+  drawCollectorBands();
+}
+
+function renderCollectorList() {
+  const container = $("#collector-list");
+  if (!container) return;
+  container.innerHTML = state.collectors.map((c, i) => `
+    <div class="row" style="margin-bottom:4px" data-col-row="${i}">
+      <span style="width:14px;height:14px;border-radius:3px;display:inline-block;
+        background:${COLORS[i % COLORS.length]}"></span>
+      <label>ラベル <input data-col-field="label" value="${c.label}"
+        style="min-width:120px"></label>
+      <label>x最小 [mm] <input data-col-field="x_min_m"
+        value="${(c.x_min_m * 1e3).toFixed(3)}" style="min-width:90px"></label>
+      <label>x最大 [mm] <input data-col-field="x_max_m"
+        value="${(c.x_max_m * 1e3).toFixed(3)}" style="min-width:90px"></label>
+      <button data-col-del="${i}" class="danger">削除</button>
+    </div>`).join("");
+}
+
+function readCollectorList() {
+  document.querySelectorAll("#collector-list [data-col-row]").forEach((row) => {
+    const i = +row.dataset.colRow;
+    const get = (field) =>
+      row.querySelector(`[data-col-field="${field}"]`).value;
+    state.collectors[i] = {
+      label: get("label"),
+      x_min_m: parseFloat(get("x_min_m")) * 1e-3,
+      x_max_m: parseFloat(get("x_max_m")) * 1e-3,
+    };
+  });
+  drawCollectorBands();
+}
+
+function armCollectorSelect() {
+  const flux = document.getElementById("plot-flux");
+  if (!flux || !flux.on) return;
+  setMessage("#col-message",
+    "フラックス図の上でドラッグして範囲を選択してください", "ok");
+  Plotly.relayout(flux, { dragmode: "select" });
+  const handler = (event) => {
+    flux.removeAllListeners("plotly_selected");
+    Plotly.relayout(flux, { dragmode: "zoom" });
+    if (!event || !event.range || !event.range.x) {
+      setMessage("#col-message", "", "");
+      return;
+    }
+    const [x0, x1] = event.range.x;
+    state.collectors.push({
+      label: `C${state.collectors.length + 1}`,
+      x_min_m: Math.min(x0, x1) * 1e-3,
+      x_max_m: Math.max(x0, x1) * 1e-3,
+    });
+    renderCollectorList();
+    drawCollectorBands();
+    setMessage("#col-message",
+      `範囲 ${Math.min(x0, x1).toFixed(2)}–${Math.max(x0, x1).toFixed(2)} mm を追加しました`, "ok");
+  };
+  flux.on("plotly_selected", handler);
+}
+
+function drawCollectorBands() {
+  const flux = document.getElementById("plot-flux");
+  if (!flux || !flux.layout) return;
+  const bands = state.collectors.map((c, i) => ({
+    type: "rect", x0: c.x_min_m * 1e3, x1: c.x_max_m * 1e3,
+    yref: "paper", y0: 0, y1: 1,
+    fillcolor: COLORS[i % COLORS.length], opacity: 0.13, line: { width: 0 },
+  }));
+  Plotly.relayout(flux, { shapes: (state.fluxBaseShapes || []).concat(bands) });
+}
+
+async function evaluateCollectors() {
+  readCollectorList();
+  try {
+    const body = await api(
+      `/api/jobs/${state.currentJobId}/collectors/evaluate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collectors: state.collectors }),
+      });
+    state.collectorEval = body;
+    const select = $("#col-pressure");
+    select.innerHTML = body.pressures.map((p, i) =>
+      `<option value="${i}">${p} mTorr</option>`).join("");
+    $("#col-csv").disabled = false;
+    renderCollectorResults();
+    setMessage("#col-message", "集計しました", "ok");
+  } catch (error) {
+    setMessage("#col-message", `集計失敗: ${error.message}`, "error");
+  }
+}
+
+function renderCollectorResults() {
+  const body = state.collectorEval;
+  if (!body) return;
+  const pi = +($("#col-pressure").value || 0);
+  const rows = body.collectors.map((c, i) => {
+    const r = c.results[pi];
+    return `<tr>
+      <td><span style="color:${COLORS[i % COLORS.length]}">■</span>
+        ${c.label || `C${i + 1}`}</td>
+      <td class="num">${(c.x_min_m * 1e3).toFixed(2)}–${(c.x_max_m * 1e3).toFixed(2)}</td>
+      <td class="num">${r.count}</td>
+      <td class="num">${(100 * r.fraction).toFixed(1)}</td>
+      <td class="num">${r.mean_energy_eV?.toFixed(1) ?? "-"}</td>
+      <td class="num">${r.count ? `${r.e05_eV.toFixed(1)}–${r.e95_eV.toFixed(1)}` : "-"}</td>
+      <td class="num">${r.mean_angle_deg?.toFixed(2) ?? "-"}</td>
+      <td class="num">${r.mean_abs_angle_deg?.toFixed(2) ?? "-"}</td></tr>`;
+  }).join("");
+  $("#col-stats").innerHTML = `<table><thead><tr><th>コレクタ</th>
+    <th class="num">範囲 [mm]</th><th class="num">粒子数</th>
+    <th class="num">割合 [%]</th><th class="num">&lt;E&gt; [eV]</th>
+    <th class="num">E05–E95 [eV]</th><th class="num">&lt;θ&gt; [deg]</th>
+    <th class="num">&lt;|θ|&gt; [deg]</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+
+  const iedfTraces = [], iadfTraces = [];
+  body.collectors.forEach((c, i) => {
+    const r = c.results[pi];
+    if (!r.count) return;
+    const color = COLORS[i % COLORS.length];
+    iedfTraces.push({ x: centers(r.iedf_edges_eV), y: r.iedf_density,
+      name: c.label || `C${i + 1}`, line: { color } });
+    iadfTraces.push({ x: r.iadf_centers_deg, y: r.iadf_density,
+      name: c.label || `C${i + 1}`, line: { color } });
+  });
+  const iedfDiv = document.getElementById("col-iedf");
+  const iadfDiv = document.getElementById("col-iadf");
+  iedfDiv.classList.remove("hidden");
+  iadfDiv.classList.remove("hidden");
+  linePlot(iedfDiv, iedfTraces, { title: "コレクタ別IEDF",
+    xtitle: "Ion impact energy [eV]", ytitle: "IEDF [1/eV]" });
+  linePlot(iadfDiv, iadfTraces, { title: "コレクタ別IADF（符号付き）",
+    xtitle: "Signed angle [deg]", ytitle: "IADF [1/deg]" });
+  drawCollectorBands();
+}
+
+async function saveCollectors() {
+  readCollectorList();
+  try {
+    await api(`/api/jobs/${state.currentJobId}/collectors`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collectors: state.collectors }),
+    });
+    setMessage("#col-message", "コレクタ定義をジョブに保存しました", "ok");
+  } catch (error) {
+    setMessage("#col-message", `保存失敗: ${error.message}`, "error");
+  }
+}
+
+function downloadCollectorCsv() {
+  const body = state.collectorEval;
+  if (!body) return;
+  const pi = +($("#col-pressure").value || 0);
+  const labels = body.collectors.map((c, i) => c.label || `C${i + 1}`);
+  const lines = [`# pressure_mTorr, ${body.pressures[pi]}`];
+  lines.push("# --- IEDF [1/eV] ---");
+  lines.push(["energy_center_eV", ...labels].join(","));
+  const first = body.collectors.find((c) => c.results[pi].count);
+  if (first) {
+    const edges = first.results[pi].iedf_edges_eV;
+    for (let k = 0; k + 1 < edges.length; k++) {
+      const row = [(0.5 * (edges[k] + edges[k + 1])).toFixed(4)];
+      for (const c of body.collectors) {
+        const r = c.results[pi];
+        row.push(r.count ? r.iedf_density[k].toExponential(5) : "");
+      }
+      lines.push(row.join(","));
+    }
+    lines.push("# --- IADF [1/deg] ---");
+    lines.push(["angle_center_deg", ...labels].join(","));
+    const angles = first.results[pi].iadf_centers_deg;
+    for (let k = 0; k < angles.length; k++) {
+      const row = [angles[k].toFixed(3)];
+      for (const c of body.collectors) {
+        const r = c.results[pi];
+        row.push(r.count ? r.iadf_density[k].toExponential(5) : "");
+      }
+      lines.push(row.join(","));
+    }
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `collectors_${state.currentJobId.slice(0, 8)}_`
+    + `${body.pressures[pi]}mTorr.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function drawDetailPlots(plots) {
@@ -1014,6 +1562,7 @@ function drawDetailPlots(plots) {
       type: "line", x0: x, x1: x, yref: "paper", y0: 0, y1: 1,
       line: { color: "#999", width: 1, dash: "dot" },
     }));
+    state.fluxBaseShapes = edgeShapes;
     const profileTraces = (key) => plots.profiles.map((profile, i) => ({
       x: profile.x_mm, y: profile[key],
       name: `${profile.pressure_mTorr} mTorr`,

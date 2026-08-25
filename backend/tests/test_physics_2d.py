@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from bkmcore.schemas import Config2D, WaveformConfig
+from bkmcore.schemas import Config2D, GeometryConfig, WaveformConfig
+from bkmcore.model2d.field import max_surface_height, surface_height
 from bkmcore.model2d.runner import run_2d
 from bkmcore.report import build_plots_2d
 
@@ -43,6 +44,65 @@ class TestCircuitParity:
         # ノートブック: 周期端点のVp差 4.586e-10 V, KCL残差 4.014e-15
         assert v["periodic_error_V"] == pytest.approx(4.586e-10, rel=0.01)
         assert v["kcl_max_relative_residual"] < 1.0e-12
+
+
+class TestProfileSurface:
+    """profileモード（スケッチ表面）の検証。"""
+
+    def profile_geo(self, smoothing=0.0) -> GeometryConfig:
+        return GeometryConfig(
+            surface_mode="profile", profile_smoothing_m=smoothing,
+            profile_points_m=[[0.0, 0.25e-3], [3.0e-3, 0.25e-3],
+                              [3.2e-3, 0.45e-3], [12.8e-3, 0.45e-3],
+                              [13.0e-3, 0.25e-3]])
+
+    def test_interpolates_control_points(self):
+        geo = self.profile_geo()
+        xs = np.array([0.0, 3.0e-3, 3.2e-3, 8.0e-3, 12.8e-3])
+        expected = np.array([0.25e-3, 0.25e-3, 0.45e-3, 0.45e-3, 0.45e-3])
+        assert np.allclose(surface_height(xs, geo), expected, atol=1e-9)
+
+    def test_periodic_wrap(self):
+        geo = self.profile_geo()
+        # 最終点(13mm,0.25mm)から先頭点(0mm,0.25mm)へ周期補間
+        assert surface_height(14.5e-3, geo) == pytest.approx(0.25e-3, abs=1e-9)
+        assert surface_height(16.0e-3, geo) == pytest.approx(
+            float(surface_height(0.0, geo)), abs=1e-12)
+
+    def test_smoothing_preserves_scale(self):
+        sharp = self.profile_geo(smoothing=0.0)
+        smooth = self.profile_geo(smoothing=0.2e-3)
+        xs = np.linspace(0.0, 16.0e-3, 500, endpoint=False)
+        h_sharp = surface_height(xs, sharp)
+        h_smooth = surface_height(xs, smooth)
+        assert abs(np.mean(h_smooth) - np.mean(h_sharp)) < 1e-6
+        assert h_smooth.min() >= h_sharp.min() - 1e-9
+        assert h_smooth.max() <= h_sharp.max() + 1e-9
+
+    def test_max_surface_height(self):
+        assert max_surface_height(self.profile_geo()) == pytest.approx(
+            0.45e-3, abs=1e-8)
+
+    def test_validation_rejects_bad_points(self):
+        with pytest.raises(ValueError):
+            GeometryConfig(surface_mode="profile",
+                           profile_points_m=[[0.0, 1e-3], [1e-3, 1e-3]])
+        with pytest.raises(ValueError):
+            GeometryConfig(surface_mode="profile",
+                           profile_points_m=[[0.0, 1e-3], [1e-3, -1e-3],
+                                             [2e-3, 1e-3]])
+
+    def test_reduced_run_with_profile(self, waveform_csv_text, xsec_text):
+        config = reduced_config(waveform_csv_text)
+        config.geometry = self.profile_geo(smoothing=0.1e-3)
+        config.space_charge.enabled = False
+        config.tpmc.n_particles = 800
+        output = run_2d(config, xsec_text=xsec_text)
+        assert output["partition_error"] < 1.0e-3
+        run = output["results"][0]["run"]
+        assert run["energy_eV"].size > 0.9 * 800
+        assert np.isfinite(
+            output["results"][0]["summary"]["wafer_mean_energy_eV"])
 
 
 @pytest.fixture(scope="module")

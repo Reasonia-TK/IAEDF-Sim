@@ -54,6 +54,23 @@ class WaveformPreviewRequest(BaseModel):
     frequency_Hz: float = 13.56e6
 
 
+class CollectorDef(BaseModel):
+    label: str = ""
+    x_min_m: float
+    x_max_m: float
+
+
+class CollectorSaveRequest(BaseModel):
+    collectors: list[CollectorDef]
+
+
+class CollectorEvalRequest(BaseModel):
+    collectors: list[CollectorDef]
+    energy_bins: int = 160
+    angle_bins: int = 120
+    energy_max_eV: Optional[float] = None
+
+
 def job_to_dict(job: Job, *, with_detail=False) -> dict:
     row = {
         "id": job.id,
@@ -74,6 +91,8 @@ def job_to_dict(job: Job, *, with_detail=False) -> dict:
     }
     if with_detail:
         row["config"] = json.loads(job.config_json)
+        row["collectors"] = (json.loads(job.collectors_json)
+                             if job.collectors_json else [])
     return row
 
 
@@ -330,6 +349,115 @@ def audit_log(limit: int = Query(default=100, le=1000),
     return [{"ts": r.ts.isoformat(), "action": r.action,
              "target_type": r.target_type, "target_id": r.target_id,
              "detail": r.detail} for r in rows]
+
+
+# ---------------- コレクタ（2D: 実行後に任意範囲でIEDF/IADFを集計） ----------------
+
+def _validate_collectors(collectors: list[CollectorDef]):
+    if not 1 <= len(collectors) <= 12:
+        raise HTTPException(400, "コレクタは1〜12個で指定してください。")
+    for c in collectors:
+        if not c.x_max_m > c.x_min_m:
+            raise HTTPException(400, f"コレクタ「{c.label}」の範囲が不正です"
+                                     "（x_max > x_min が必要）。")
+
+
+def _get_2d_done_job(job_id: str, session: Session) -> Job:
+    job = get_job_or_404(job_id, session)
+    if job.model != "2d":
+        raise HTTPException(400, "コレクタは2Dジョブのみ対応です。")
+    if job.status != "done" or not job.result_dir:
+        raise HTTPException(409, f"ジョブは未完了です (status={job.status})。")
+    return job
+
+
+@app.put("/api/jobs/{job_id}/collectors")
+def save_collectors(job_id: str, request: CollectorSaveRequest,
+                    session: Session = Depends(get_session)):
+    """コレクタ定義をジョブに保存する（次回表示時に復元）。"""
+    job = _get_2d_done_job(job_id, session)
+    _validate_collectors(request.collectors)
+    job.collectors_json = json.dumps(
+        [c.model_dump() for c in request.collectors], ensure_ascii=False)
+    session.commit()
+    return {"ok": True, "count": len(request.collectors)}
+
+
+@app.post("/api/jobs/{job_id}/collectors/evaluate")
+def evaluate_collectors(job_id: str, request: CollectorEvalRequest,
+                        session: Session = Depends(get_session)):
+    """保存済み生データ（raw.npz）から任意x範囲のIEDF/IADFを即時集計する。"""
+    import numpy as np
+
+    job = _get_2d_done_job(job_id, session)
+    _validate_collectors(request.collectors)
+    path = Path(job.result_dir) / "raw.npz"
+    if not path.is_file():
+        raise HTTPException(404, "生データ（raw.npz）が見つかりません。")
+    data = np.load(path)
+
+    cases = []
+    i = 0
+    while f"p{i}_pressure_mTorr" in data:
+        cases.append({
+            "pressure": float(data[f"p{i}_pressure_mTorr"]),
+            "energy": data[f"p{i}_energy_eV"],
+            "angle": data[f"p{i}_angle_deg"],
+            "x": data[f"p{i}_impact_x_m"],
+        })
+        i += 1
+    if not cases:
+        raise HTTPException(404, "粒子データがありません。")
+
+    # 共通エネルギー軸: 指定がなければ全コレクタ選択粒子の99.7%点から決める
+    if request.energy_max_eV is not None:
+        energy_max = float(request.energy_max_eV)
+    else:
+        selected = []
+        for case in cases:
+            for c in request.collectors:
+                mask = (case["x"] >= c.x_min_m) & (case["x"] <= c.x_max_m)
+                if np.any(mask):
+                    selected.append(case["energy"][mask])
+        merged = np.concatenate(selected) if selected else np.array([1.0])
+        energy_max = float(np.percentile(merged, 99.7) * 1.05)
+
+    e_bins = max(10, min(int(request.energy_bins), 1000))
+    a_bins = max(10, min(int(request.angle_bins), 1000))
+    out_collectors = []
+    for c in request.collectors:
+        results = []
+        for case in cases:
+            mask = (case["x"] >= c.x_min_m) & (case["x"] <= c.x_max_m)
+            energy = case["energy"][mask]
+            angle = case["angle"][mask]
+            entry = {"pressure_mTorr": case["pressure"],
+                     "count": int(energy.size),
+                     "fraction": float(energy.size / max(case["x"].size, 1))}
+            if energy.size:
+                iedf, e_edges = np.histogram(
+                    energy, bins=e_bins, range=(0, energy_max), density=True)
+                iadf, a_edges = np.histogram(
+                    angle, bins=a_bins, range=(-90, 90), density=True)
+                entry.update({
+                    "mean_energy_eV": float(np.mean(energy)),
+                    "e05_eV": float(np.percentile(energy, 5)),
+                    "e95_eV": float(np.percentile(energy, 95)),
+                    "mean_angle_deg": float(np.mean(angle)),
+                    "mean_abs_angle_deg": float(np.mean(np.abs(angle))),
+                    "iedf_edges_eV": e_edges.tolist(),
+                    "iedf_density": iedf.tolist(),
+                    "iadf_centers_deg":
+                        (0.5 * (a_edges[:-1] + a_edges[1:])).tolist(),
+                    "iadf_density": iadf.tolist(),
+                })
+            results.append(entry)
+        out_collectors.append({"label": c.label, "x_min_m": c.x_min_m,
+                               "x_max_m": c.x_max_m, "results": results})
+    return {"pressures": [case["pressure"] for case in cases],
+            "energy_max_eV": energy_max,
+            "total_particles": [int(case["x"].size) for case in cases],
+            "collectors": out_collectors}
 
 
 # ---------------- 比較 ----------------

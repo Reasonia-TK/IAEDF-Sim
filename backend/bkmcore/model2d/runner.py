@@ -11,7 +11,7 @@ from ..waveform import make_derivative_function, make_waveform_function
 from ..xsec import build_cross_sections
 from .analysis import edge_summary
 from .circuit import circuit_residual, solve_periodic_plasma_potential
-from .field import build_basis
+from .field import build_basis, max_surface_height
 from .space_charge import build_space_charge
 from .tpmc import run_tpmc_2d
 
@@ -46,7 +46,7 @@ def run_2d(config: Config2D, *, xsec_text: str | None = None,
     vsr_max = float(np.max(circuit_solution["V_sr"]))
     sheath_scale = float(child_langmuir_width(max(vsw_max, vsr_max), derived))
     geo = config.geometry
-    domain_top = (max(geo.wafer_height_m, geo.ring_height_m)
+    domain_top = (max_surface_height(geo)
                   + geo.top_clearance_factor * sheath_scale)
 
     report(0.08, "2D Laplace 3基底を解いています")

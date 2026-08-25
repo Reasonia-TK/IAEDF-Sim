@@ -172,6 +172,55 @@ def test_delete_requires_admin(client):
                for a in audit)
 
 
+def test_collectors_2d(client):
+    config = {
+        "wafer_waveform": {"mode": "sinusoid"},
+        "ring_waveform": {"mode": "sinusoid"},
+        "field2d": {"nx": 64, "ny": 40},
+        "space_charge": {"enabled": False},
+        "tpmc": {"n_particles": 600},
+        "circuit": {"phase_points": 512},
+    }
+    response = client.post("/api/jobs", json={
+        "model": "2d", "label": "コレクタテスト", "config": config})
+    assert response.status_code == 200, response.text
+    job_id = response.json()["id"]
+    job = wait_done(client, job_id, timeout_s=300)
+    assert job["status"] == "done", job.get("error")
+
+    collectors = [
+        {"label": "ウェハ中央", "x_min_m": 6.0e-3, "x_max_m": 10.0e-3},
+        {"label": "リング", "x_min_m": 0.0, "x_max_m": 3.0e-3},
+    ]
+    body = client.post(f"/api/jobs/{job_id}/collectors/evaluate",
+                       json={"collectors": collectors}).json()
+    assert len(body["collectors"]) == 2
+    center = body["collectors"][0]["results"][0]
+    assert center["count"] > 0
+    assert center["mean_energy_eV"] > 10
+    assert len(center["iedf_density"]) == 160
+    # 範囲を分ければ粒子は排他的に配分される
+    total = sum(c["results"][0]["count"] for c in body["collectors"])
+    assert total <= body["total_particles"][0]
+
+    # 保存 -> 詳細取得で復元される
+    assert client.put(f"/api/jobs/{job_id}/collectors",
+                      json={"collectors": collectors}).json()["ok"]
+    detail = client.get(f"/api/jobs/{job_id}").json()
+    assert detail["collectors"][0]["label"] == "ウェハ中央"
+
+    # 不正範囲は400
+    bad = [{"label": "x", "x_min_m": 5e-3, "x_max_m": 1e-3}]
+    assert client.post(f"/api/jobs/{job_id}/collectors/evaluate",
+                       json={"collectors": bad}).status_code == 400
+    # 1Dジョブには適用不可
+    done_1d = client.get("/api/jobs",
+                         params={"model": "1d", "status": "done"}).json()
+    assert client.post(f"/api/jobs/{done_1d['jobs'][0]['id']}"
+                       "/collectors/evaluate",
+                       json={"collectors": collectors}).status_code == 400
+
+
 def test_compare(client):
     done = client.get("/api/jobs", params={"status": "done"}).json()["jobs"]
     assert len(done) >= 1

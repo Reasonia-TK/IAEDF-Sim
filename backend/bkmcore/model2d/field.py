@@ -6,12 +6,77 @@ import numpy as np
 from ..schemas import Field2DConfig, GeometryConfig
 
 
+# profileモードの密表面テーブルキャッシュ（設定内容をキーに再利用）
+_PROFILE_TABLE_N = 4096
+_profile_cache: dict = {}
+
+
+def _profile_table(geo: GeometryConfig):
+    key = (tuple(tuple(p) for p in geo.profile_points_m),
+           geo.profile_smoothing_m, geo.periodic_length_m)
+    cached = _profile_cache.get(key)
+    if cached is not None:
+        return cached
+    points = np.asarray(sorted(geo.profile_points_m, key=lambda p: p[0]),
+                        dtype=float)
+    px, py = points[:, 0], points[:, 1]
+    length = geo.periodic_length_m
+    # 周期線形補間（端点は周期でラップ）
+    px_ext = np.r_[px, px[0] + length]
+    py_ext = np.r_[py, py[0]]
+    grid = np.arange(_PROFILE_TABLE_N) * length / _PROFILE_TABLE_N
+    q = np.where(grid < px_ext[0], grid + length, grid)
+    table = np.interp(q, px_ext, py_ext)
+    if geo.profile_smoothing_m > 0.0:
+        sigma_cells = geo.profile_smoothing_m / (length / _PROFILE_TABLE_N)
+        half = int(np.ceil(4.0 * sigma_cells))
+        kernel = np.exp(-0.5 * (np.arange(-half, half + 1) / sigma_cells) ** 2)
+        kernel /= kernel.sum()
+        table = np.convolve(np.r_[table[-half:], table, table[:half]],
+                            kernel, mode="same")[half:-half]
+    if len(_profile_cache) > 16:
+        _profile_cache.clear()
+    _profile_cache[key] = table
+    return table
+
+
+def _profile_nodes(geo: GeometryConfig):
+    key = ("nodes", tuple(tuple(p) for p in geo.profile_points_m),
+           geo.periodic_length_m)
+    cached = _profile_cache.get(key)
+    if cached is not None:
+        return cached
+    points = np.asarray(sorted(geo.profile_points_m, key=lambda p: p[0]),
+                        dtype=float)
+    px_ext = np.r_[points[:, 0], points[0, 0] + geo.periodic_length_m]
+    py_ext = np.r_[points[:, 1], points[0, 1]]
+    _profile_cache[key] = (px_ext, py_ext)
+    return px_ext, py_ext
+
+
 def surface_height(x, geo: GeometryConfig):
     q = np.mod(np.asarray(x, dtype=float), geo.periodic_length_m)
+    if geo.surface_mode == "profile":
+        if geo.profile_smoothing_m <= 0.0:
+            # 平滑化なしは制御点を厳密に通る周期線形補間
+            px_ext, py_ext = _profile_nodes(geo)
+            qq = np.where(q < px_ext[0], q + geo.periodic_length_m, q)
+            return np.interp(qq, px_ext, py_ext)
+        table = _profile_table(geo)
+        position = q / geo.periodic_length_m * _PROFILE_TABLE_N
+        index = np.floor(position).astype(np.int64) % _PROFILE_TABLE_N
+        fraction = position - np.floor(position)
+        nxt = (index + 1) % _PROFILE_TABLE_N
+        return table[index] + fraction * (table[nxt] - table[index])
     left, right = geo.wafer_left_m, geo.wafer_right_m
     width = max(geo.step_smoothing_width_m, 1e-12)
     window = 0.5 * (np.tanh((q - left) / width) - np.tanh((q - right) / width))
     return geo.ring_height_m + (geo.wafer_height_m - geo.ring_height_m) * window
+
+
+def max_surface_height(geo: GeometryConfig) -> float:
+    sample = np.arange(2048) * geo.periodic_length_m / 2048
+    return float(np.max(surface_height(sample, geo)))
 
 
 def is_wafer(x, geo: GeometryConfig):
