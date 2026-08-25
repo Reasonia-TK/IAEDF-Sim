@@ -280,6 +280,7 @@ function buildForm() {
               <option value="taper">テーパーリング</option>
               <option value="recess">リセスウェハ</option>
               <option value="groove">溝付きリング</option>
+              <option value="patent_ring">特許型エッジリング（ギャップ+傾斜+高リング）</option>
             </select>
           </label>
           <span class="muted" id="geo-hint"></span>
@@ -492,6 +493,28 @@ function applyGeoPreset(name) {
              [right + 0.35 * (L - right), ring],
              [right + 0.5 * (L - right), ring * 0.35],
              [right + 0.65 * (L - right), ring]],
+    // 特許型: ウェハ→狭ギャップ→傾斜(ウェハ面下から)→高いリング上面→外周小段差
+    patent_ring: (() => {
+      const ringTop = ring > wafer ? ring : wafer + 0.20e-3;
+      const gapW = 0.25e-3;         // ギャップ(310)の幅
+      const gapDepth = 0.33 * wafer; // ギャップ底の高さ
+      const rampL = 0.75e-3;        // 傾斜(281)の長さ
+      const lipY = wafer * 0.90;    // 傾斜内端(ウェハ面よりわずかに下)
+      const stepY = ringTop - 0.10e-3;  // 外周段差の高さ
+      const stepW = 0.60e-3;        // 外周段差の幅
+      return [
+        [0.0, stepY], [stepW, stepY], [stepW + 0.12e-3, ringTop],
+        [left - gapW - rampL, ringTop],
+        [left - gapW - 0.07e-3, lipY],
+        [left - gapW, gapDepth], [left - 0.05e-3, gapDepth],
+        [left + 0.06e-3, wafer],
+        [right - 0.06e-3, wafer],
+        [right + 0.05e-3, gapDepth], [right + gapW, gapDepth],
+        [right + gapW + 0.07e-3, lipY],
+        [right + gapW + rampL, ringTop],
+        [L - stepW - 0.12e-3, ringTop], [L - stepW, stepY],
+      ];
+    })(),
   };
   if (!presets[name]) return;
   state.profilePoints = presets[name];
