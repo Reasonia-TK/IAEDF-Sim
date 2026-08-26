@@ -48,6 +48,18 @@ BKM_PORT=8010 BKM_ADMIN_PASSWORD='...' docker compose up -d --build
 - 同時実行ジョブ数は `BKM_MAX_WORKERS`（既定2）で調整
 - ファイアウォールでポート8000のLAN内許可が必要な場合がある
 
+### トラブルシューティング（Linuxサーバー）
+
+`unable to get image 'iaedf-sim-bkm'` のようなエラーは、Dockerデーモンへ
+接続できないときに出る（イメージ名はフォルダ名から自動生成される正常な名前）。
+エラーの続きの文言で切り分ける:
+
+| 続きの文言 | 原因と対処 |
+|---|---|
+| `permission denied ... docker.sock` | `sudo usermod -aG docker $USER` して再ログイン（または `sudo docker compose ...`） |
+| `Cannot connect to the Docker daemon` | `sudo systemctl enable --now docker` |
+| `'compose' is not a docker command` | `sudo apt install docker-compose-plugin` |
+
 ## Windowsでの起動
 
 **方法1: Docker Desktop** — Linuxと同じ `docker compose` コマンドがそのまま使える。
