@@ -103,6 +103,23 @@ class TestSmoke:
         output = run_1d(config, xsec_text=xsec_text)
         assert output["validation"]["energy_conservation_ok"]
 
+    def test_angle_step_overrides_bins(self, xsec_text):
+        from bkmcore.report import build_plots_1d
+        config = Config1D()
+        config.waveform = WaveformConfig(mode="sinusoid")
+        config.tpmc.n_particles = 500
+        config.gas.pressures_mTorr = [0.0]
+        config.plot.angle_step_deg = 1.0    # -> 180ビン（angle_binsより優先）
+        output = run_1d(config, xsec_text=xsec_text)
+        plots = build_plots_1d(output, config)
+        assert len(plots["iadf"][0]["density"]) == 180
+        assert len(plots["iaedf"][0]["angle_edges_deg"]) == 181
+        # 未指定なら従来通り 2*angle_bins / angle_bins
+        config.plot.angle_step_deg = None
+        plots = build_plots_1d(output, config)
+        assert len(plots["iadf"][0]["density"]) == 240
+        assert len(plots["iaedf"][0]["angle_edges_deg"]) == 121
+
     def test_approximation_xsec(self, waveform_csv_text):
         config = default_config(waveform_csv_text)
         config.gas.cross_section_source = "approximation"

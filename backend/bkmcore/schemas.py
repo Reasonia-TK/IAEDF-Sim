@@ -73,6 +73,8 @@ class TpmcConfig(BaseModel):
 class PlotConfig(BaseModel):
     energy_bins: int = 200
     angle_bins: int = 120
+    # 角度刻み [deg]。指定時はangle_binsより優先（ビン数 = 180/刻み）
+    angle_step_deg: Optional[float] = None
     energy_max_eV: Optional[float] = None
 
 
@@ -256,6 +258,8 @@ class AnalysisConfig(BaseModel):
     affected_threshold_deg: float = 1.0
     energy_bins: int = 160
     angle_bins: int = 120
+    # 角度刻み [deg]。指定時はangle_binsより優先（ビン数 = 180/刻み）
+    angle_step_deg: Optional[float] = None
 
 
 class Config2D(BaseModel):

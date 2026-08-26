@@ -87,7 +87,8 @@ const LABELS = {
   seed: ["乱数シード", "同一シードで結果は再現される"],
   max_recommended_collision_probability: ["衝突確率上限", "検証セルの警告しきい値"],
   energy_bins: ["エネルギービン数", ""],
-  angle_bins: ["角度ビン数", ""],
+  angle_bins: ["角度ビン数", "角度刻みが未指定のとき使用"],
+  angle_step_deg: ["角度刻み [deg]", "指定するとビン数より優先（ビン数=180/刻み）。空=ビン数を使用"],
   energy_max_eV: ["エネルギー上限 [eV]", "空欄で自動（99.7パーセンタイル）"],
   wafer_to_ground_area_ratio: ["ウェハ/接地 面積比", ""],
   ring_to_ground_area_ratio: ["リング/接地 面積比", ""],
@@ -1059,7 +1060,7 @@ function renderHistory() {
   }).join("");
   $("#history-table").innerHTML = `<table>
     <thead><tr><th></th><th>日時</th><th>モデル</th><th>ラベル</th>
-    <th>投入者</th><th>状態</th><th>条件・結果</th><th>検証</th><th>操作</th>
+    <th>ユーザーID</th><th>状態</th><th>条件・結果</th><th>検証</th><th>操作</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
 
   $("#history-table").querySelectorAll("input[data-compare]").forEach((box) =>
@@ -1341,7 +1342,7 @@ function detailHeaderHtml(job) {
       ${job.label || job.id.slice(0, 8)}</h2>
     <dl class="kv">
       <dt>ジョブID</dt><dd>${job.id}</dd>
-      <dt>投入者</dt><dd>${job.submitted_by || "-"}</dd>
+      <dt>ユーザーID</dt><dd>${job.submitted_by || "-"}</dd>
       <dt>投入日時</dt><dd>${formatDate(job.created_at)}</dd>
       <dt>完了日時</dt><dd>${formatDate(job.finished_at)}</dd>
       <dt>状態</dt><dd><span class="status-chip status-${job.status}">${job.status}</span></dd>

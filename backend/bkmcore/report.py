@@ -20,6 +20,13 @@ def _finite_list(a):
     return [float(v) for v in np.asarray(a, dtype=float)]
 
 
+def _angle_bins(default_bins: int, step_deg) -> int:
+    """角度刻み[deg]指定時はビン数(180/刻み)へ変換する（指定時優先）。"""
+    if step_deg is not None and step_deg > 0:
+        return int(np.clip(round(180.0 / step_deg), 10, 2000))
+    return default_bins
+
+
 # ---------------- 1D ----------------
 
 def build_plots_1d(output: dict, config: Config1D) -> dict:
@@ -69,16 +76,18 @@ def build_plots_1d(output: dict, config: Config1D) -> dict:
         iedf.append({"pressure_mTorr": r["pressure_mTorr"],
                      "edges_eV": _finite_list(edges),
                      "density": _finite_list(hist)})
-        ahist, aedges = np.histogram(r["signed_angle_deg"][ok],
-                                     bins=2 * plot_cfg.angle_bins,
-                                     range=(-90, 90), density=True)
+        ahist, aedges = np.histogram(
+            r["signed_angle_deg"][ok],
+            bins=_angle_bins(2 * plot_cfg.angle_bins, plot_cfg.angle_step_deg),
+            range=(-90, 90), density=True)
         centers = 0.5 * (aedges[:-1] + aedges[1:])
         iadf.append({"pressure_mTorr": r["pressure_mTorr"],
                      "angle_deg": _finite_list(centers),
                      "density": _finite_list(ahist)})
         h2, a_edges, e_edges = np.histogram2d(
             r["signed_angle_deg"][ok], E,
-            bins=(plot_cfg.angle_bins, plot_cfg.energy_bins // 2),
+            bins=(_angle_bins(plot_cfg.angle_bins, plot_cfg.angle_step_deg),
+                  plot_cfg.energy_bins // 2),
             range=((-90, 90), (0, energy_max)), density=True)
         iaedf.append({"pressure_mTorr": r["pressure_mTorr"],
                       "angle_edges_deg": _finite_list(a_edges),
@@ -203,7 +212,9 @@ def build_plots_2d(output: dict, config: Config2D) -> dict:
             e_max_w = float(np.percentile(ew, 99.7)) * 1.05
             h2, a_edges, e_edges = np.histogram2d(
                 run["angle_deg"][onw], ew,
-                bins=(analysis.angle_bins, analysis.energy_bins // 2),
+                bins=(_angle_bins(analysis.angle_bins,
+                                  analysis.angle_step_deg),
+                      analysis.energy_bins // 2),
                 range=((-90, 90), (0, e_max_w)), density=True)
             iaedf.append({"pressure_mTorr": pressure,
                           "angle_edges_deg": _finite_list(a_edges),
