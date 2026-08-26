@@ -19,7 +19,10 @@ from sqlalchemy.orm import Session
 
 from bkmcore.schemas import Config1D, Config2D
 
-from .auth import check_admin_password, require_admin
+from fastapi import Header
+
+from .auth import (check_admin_password, require_admin,
+                   verify_admin_authorization)
 from .db import AuditLog, Job, Waveform, get_session, utcnow
 from .jobs import manager
 from .settings import DATA_DIR, FRONTEND_DIR
@@ -203,9 +206,13 @@ def list_waveforms(session: Session = Depends(get_session)):
 
 @app.post("/api/jobs")
 def create_job(request: JobCreateRequest,
-               session: Session = Depends(get_session)):
+               session: Session = Depends(get_session),
+               authorization: Optional[str] = Header(default=None)):
     if request.model not in ("1d", "2d"):
         raise HTTPException(400, "modelは1d/2d")
+    if request.model == "2d":
+        # 2D計算は管理者限定
+        verify_admin_authorization(authorization)
     schema = Config1D if request.model == "1d" else Config2D
     try:
         config = schema.model_validate(request.config)

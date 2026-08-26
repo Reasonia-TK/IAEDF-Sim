@@ -15,7 +15,8 @@ def check_admin_password(password: str) -> bool:
     return secrets.compare_digest(password, ADMIN_PASSWORD)
 
 
-def require_admin(authorization: Optional[str] = Header(default=None)):
+def verify_admin_authorization(authorization: Optional[str]):
+    """Authorizationヘッダを検証し、不正ならHTTPExceptionを送出する。"""
     if not ADMIN_PASSWORD:
         raise HTTPException(
             status_code=403,
@@ -25,3 +26,7 @@ def require_admin(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=401, detail="管理者認証が必要です。")
     if not check_admin_password(authorization.removeprefix("Bearer ")):
         raise HTTPException(status_code=401, detail="管理者パスワードが違います。")
+
+
+def require_admin(authorization: Optional[str] = Header(default=None)):
+    verify_admin_authorization(authorization)

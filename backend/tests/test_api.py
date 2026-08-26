@@ -181,8 +181,13 @@ def test_collectors_2d(client):
         "tpmc": {"n_particles": 600},
         "circuit": {"phase_points": 512},
     }
-    response = client.post("/api/jobs", json={
+    # 2D計算は管理者限定
+    denied = client.post("/api/jobs", json={
         "model": "2d", "label": "コレクタテスト", "config": config})
+    assert denied.status_code == 401
+    response = client.post("/api/jobs", json={
+        "model": "2d", "label": "コレクタテスト", "config": config},
+        headers={"Authorization": "Bearer test-admin-pass"})
     assert response.status_code == 200, response.text
     job_id = response.json()["id"]
     job = wait_done(client, job_id, timeout_s=300)

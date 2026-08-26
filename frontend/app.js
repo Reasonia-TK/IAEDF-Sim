@@ -893,7 +893,7 @@ async function runJob() {
   try {
     const job = await api("/api/jobs", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminHeaders() },
       body: JSON.stringify({
         model: state.model,
         label: $("#job-label").value,
@@ -1797,6 +1797,18 @@ function drawCompareIedf(normalize) {
 function refreshAdminUi() {
   $("#admin-badge").classList.toggle("hidden", !isAdmin());
   $("#admin-login-btn").textContent = isAdmin() ? "ログアウト" : "管理者ログイン";
+  // 2D計算は管理者限定: 非管理者にはモデル選択に表示しない
+  const option2d = document.querySelector('#model-select option[value="2d"]');
+  if (option2d) {
+    option2d.hidden = !isAdmin();
+    option2d.disabled = !isAdmin();
+  }
+  if (!isAdmin() && state.model === "2d") {
+    state.model = "1d";
+    $("#model-select").value = "1d";
+    state.presetConfig = null;
+    ensureDefaults("1d").then(buildForm);
+  }
 }
 
 async function adminLoginToggle() {
