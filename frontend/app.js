@@ -1253,6 +1253,89 @@ function validationHtml(validation) {
     <tbody>${rows}</tbody></table></div>`;
 }
 
+// ---------------- CSVエクスポート ----------------
+
+function csvDownload(filename, lines) {
+  // Excel対応のためBOM付きUTF-8
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")],
+                        { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function exportCsv(kind, job, plots) {
+  const short = job.id.slice(0, 8);
+  const name = (suffix) => `bkm_${job.model}_${short}_${suffix}.csv`;
+  const wf = plots.vp_waveform;
+  const lines = [];
+  if (kind === "waveform") {
+    if (plots.model === "1d") {
+      lines.push("phase_deg,V_e_driven_V,V_p_plasma_V,"
+                 + "V_sp_powered_sheath_V,V_sg_ground_sheath_V");
+      wf.phase_deg.forEach((p, i) => lines.push(
+        `${p},${wf.V_e[i]},${wf.V_p[i]},${wf.V_sp[i]},${wf.V_sg[i]}`));
+    } else {
+      lines.push("phase_deg,V_w_wafer_V,V_r_ring_V,V_p_plasma_V,"
+                 + "V_sw_wafer_sheath_V,V_sr_ring_sheath_V");
+      wf.phase_deg.forEach((p, i) => lines.push(
+        `${p},${wf.V_w[i]},${wf.V_r[i]},${wf.V_p[i]},`
+        + `${wf.V_sw[i]},${wf.V_sr[i]}`));
+    }
+    csvDownload(name("waveforms"), lines);
+  } else if (kind === "iedf") {
+    if (plots.model === "1d") {
+      // 全圧力で共通のエネルギー軸
+      const labels = plots.iedf.map((e) => `IEDF_${e.pressure_mTorr}mTorr_1_eV`);
+      lines.push(["energy_center_eV", ...labels].join(","));
+      const xs = centers(plots.iedf[0].edges_eV);
+      xs.forEach((x, k) => lines.push([x.toFixed(4),
+        ...plots.iedf.map((e) => e.density[k].toExponential(6))].join(",")));
+    } else {
+      // 2Dは圧力ごとにエネルギー軸が異なるためブロック単位で出力
+      for (const entry of plots.iedf) {
+        lines.push(`# pressure_mTorr, ${entry.pressure_mTorr}`);
+        const cols = ["energy_center_eV", "IEDF_wafer_1_eV"];
+        if (entry.ring_density) cols.push("IEDF_ring_1_eV");
+        if (entry.insulator_density) cols.push("IEDF_insulator_1_eV");
+        lines.push(cols.join(","));
+        centers(entry.edges_eV).forEach((x, k) => {
+          const row = [x.toFixed(4), entry.wafer_density[k].toExponential(6)];
+          if (entry.ring_density) row.push(entry.ring_density[k].toExponential(6));
+          if (entry.insulator_density) {
+            row.push(entry.insulator_density[k].toExponential(6));
+          }
+          lines.push(row.join(","));
+        });
+      }
+    }
+    csvDownload(name("iedf"), lines);
+  } else if (kind === "iadf") {
+    const labels = plots.iadf.map((e) => `IADF_${e.pressure_mTorr}mTorr_1_deg`);
+    lines.push(["angle_deg", ...labels].join(","));
+    plots.iadf[0].angle_deg.forEach((a, k) => lines.push([a.toFixed(3),
+      ...plots.iadf.map((e) => e.density[k].toExponential(6))].join(",")));
+    csvDownload(name("iadf"), lines);
+  } else if (kind === "iaedf") {
+    // 縦持ち形式（圧力・角度・エネルギー・密度）
+    lines.push("pressure_mTorr,angle_center_deg,energy_center_eV,"
+               + "IAEDF_1_eV_deg");
+    for (const entry of plots.iaedf) {
+      const angles = centers(entry.angle_edges_deg);
+      const energies = centers(entry.energy_edges_eV);
+      energies.forEach((energy, row) => {
+        angles.forEach((angle, col) => {
+          lines.push(`${entry.pressure_mTorr},${angle.toFixed(3)},`
+            + `${energy.toFixed(4)},${entry.density[row][col].toExponential(6)}`);
+        });
+      });
+    }
+    csvDownload(name("iaedf"), lines);
+  }
+}
+
 function detailHeaderHtml(job) {
   return `<div class="card"><h2>${job.model.toUpperCase()}:
       ${job.label || job.id.slice(0, 8)}</h2>
@@ -1269,6 +1352,7 @@ function detailHeaderHtml(job) {
       <button data-dl="plots">プロットJSON</button>
       <button id="reuse-config">この設定を再利用</button>
     </div>
+    <div class="row" style="margin-top:6px" id="csv-export-row"></div>
     ${job.error ? `<pre class="config-view">${job.error}</pre>` : ""}
   </div>`;
 }
@@ -1394,6 +1478,19 @@ function renderDetail(job, plots, logLines = []) {
   html += `<div class="card"><h2>設定</h2>
     <pre class="config-view">${JSON.stringify(job.config, null, 2)}</pre></div>`;
   container.innerHTML = html;
+
+  if (plots) {
+    const exportRow = container.querySelector("#csv-export-row");
+    const kinds = [["waveform", "電位波形CSV"], ["iedf", "IEDF CSV"]];
+    if (plots.model === "1d") kinds.push(["iadf", "IADF CSV"]);
+    if (plots.iaedf && plots.iaedf.length) kinds.push(["iaedf", "IAEDF CSV"]);
+    exportRow.innerHTML = `<span class="muted">CSVエクスポート:</span>`
+      + kinds.map(([kind, label]) =>
+        `<button data-csv="${kind}">${label}</button>`).join("");
+    exportRow.querySelectorAll("button[data-csv]").forEach((btn) =>
+      btn.addEventListener("click", () =>
+        exportCsv(btn.dataset.csv, job, plots)));
+  }
 
   container.querySelectorAll("button[data-dl]").forEach((btn) =>
     btn.addEventListener("click", async () => {

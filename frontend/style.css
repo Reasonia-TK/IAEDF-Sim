@@ -85,6 +85,16 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .status-error { background: #fbe4e4; color: var(--danger); }
 .status-cancelled { background: #f4ecdc; color: #8a6d1a; }
 
+/* 実行タブ上部レイアウト */
+.run-top { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.run-controls { flex: 1 1 440px; min-width: 320px; }
+.run-active {
+  flex: 1 1 340px; min-width: 280px; border-left: 1px solid var(--border);
+  padding-left: 16px; max-height: 230px; overflow-y: auto;
+}
+.run-active h2 { margin-top: 0; }
+.run-active .progress-outer { width: 110px; }
+
 /* 進捗バー */
 .progress-outer {
   background: #e6eaf0; border-radius: 6px; height: 14px; width: 220px;

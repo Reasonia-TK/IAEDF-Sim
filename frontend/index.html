@@ -19,7 +19,7 @@
 
 <nav id="tabs">
   <button data-tab="run" class="active">実行</button>
-  <button data-tab="history">履歴</button>
+  <button data-tab="history">結果</button>
   <button data-tab="compare">比較</button>
   <a class="tab-link" href="physics.html" target="_blank">モデル解説</a>
 </nav>
@@ -29,25 +29,29 @@
   <!-- ===== 実行タブ ===== -->
   <section id="tab-run">
     <div class="card">
-      <div class="row">
-        <label>モデル
-          <select id="model-select">
-            <option value="1d">1D</option>
-            <option value="2d">2D</option>
-          </select>
-        </label>
-        <label>ラベル <input id="job-label" placeholder="例: 20mTorr条件振り"></label>
-        <label>投入者 <input id="job-user" placeholder="名前（任意）"></label>
-        <button id="run-btn" class="primary">実行</button>
+      <div class="run-top">
+        <div class="run-controls">
+          <div class="row">
+            <label>モデル
+              <select id="model-select">
+                <option value="1d">1D</option>
+                <option value="2d">2D</option>
+              </select>
+            </label>
+            <label>ラベル <input id="job-label" placeholder="例: 20mTorr条件振り"></label>
+            <label>投入者 <input id="job-user" placeholder="名前（任意）"></label>
+            <button id="run-btn" class="primary">実行</button>
+          </div>
+          <p id="time-estimate" class="muted"></p>
+          <p id="run-message" class="message"></p>
+        </div>
+        <div class="run-active">
+          <h2>実行中 / 待機中ジョブ</h2>
+          <div id="active-jobs"><p class="muted">なし</p></div>
+        </div>
       </div>
-      <p id="time-estimate" class="muted"></p>
-      <p id="run-message" class="message"></p>
     </div>
     <div id="config-form"></div>
-    <div class="card">
-      <h2>実行中 / 待機中ジョブ</h2>
-      <div id="active-jobs"><p class="muted">なし</p></div>
-    </div>
   </section>
 
   <!-- ===== 履歴タブ ===== -->
@@ -84,7 +88,7 @@
   <!-- ===== 比較タブ ===== -->
   <section id="tab-compare" class="hidden">
     <div class="card">
-      <p class="muted">履歴タブで完了ジョブを2件以上選択し「選択を比較」を押してください。</p>
+      <p class="muted">結果タブで完了ジョブを2件以上選択し「選択を比較」を押してください。</p>
     </div>
     <div id="compare-result"></div>
   </section>
