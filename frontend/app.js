@@ -1154,22 +1154,103 @@ function heatmapPlot(div, entry, title) {
   }, { responsive: true, displaylogo: false });
 }
 
+// 検証項目の表示名・判定基準・判定関数（judge未定義=参考値）
+const VALIDATION_META = {
+  energy_conservation_rel_error: {
+    label: "エネルギー保存 相対誤差",
+    criterion: "< 1×10⁻³（静的無衝突シースで平均利得 = eVs）",
+    judge: (_v, val) => val.energy_conservation_ok,
+  },
+  static_expected_gain_eV: { label: "静的シース期待利得 [eV]" },
+  static_tpmc_gain_eV: { label: "TPMC平均利得 [eV]" },
+  max_step_collision_probability: {
+    label: "1ステップ最大衝突確率",
+    criterion: "≤ 0.05（推奨上限。超過時はsteps_per_rf_periodを増やす）",
+    judge: (_v, val) => val.collision_probability_ok,
+  },
+  periodic_error_V: {
+    label: "Vp周期収束誤差 [V]",
+    criterion: "収束許容値（既定1×10⁻⁸ V）未満",
+  },
+  periodic_cycles: { label: "周期定常までの周期数" },
+  riley_delta_E_eV: {
+    label: "Riley較正ΔE見積 [eV]",
+    criterion: "参考値（正弦波近似、TPMC比0.95–1.14）",
+  },
+  riley_v_tilde_eff_V: { label: "実効シース電圧振幅 [V]" },
+  omega_tau_ion_over_4: { label: "ωτion/4" },
+  kcl_max_relative_residual: {
+    label: "KCL最大相対残差",
+    criterion: "< 1×10⁻⁹（回路定式化の整合）",
+    judge: (v) => v < 1e-9,
+  },
+  partition_of_unity_error: {
+    label: "Partition of unity誤差",
+    criterion: "< 1×10⁻³（3基底重ね合わせの妥当性）",
+    judge: (v) => v < 1e-3,
+  },
+  basis_scaled_residuals: { label: "基底残差（スケール済）" },
+  space_charge_histories: { label: "空間電荷収束履歴 [V]" },
+  space_charge_converged: {
+    label: "空間電荷収束",
+    criterion: "最終外部反復の変化 ≤ 5 V",
+    judge: (v) => v === true,
+    format: (v) => (v ? "収束" : "未収束"),
+  },
+  min_sheath_voltage_V: {
+    label: "最小シース電圧 [V]",
+    criterion: "> 0（逆シースは適用外）",
+    judge: (v) => v > 0,
+  },
+};
+const VALIDATION_SKIP = new Set(["passed", "energy_conservation_ok",
+                                 "collision_probability_ok",
+                                 "reverse_sheath_warning"]);
+
+function formatValidationValue(value, meta) {
+  if (meta && meta.format) return meta.format(value);
+  if (typeof value === "number") {
+    return Math.abs(value) < 1e-2 || Math.abs(value) > 1e4
+      ? value.toExponential(3) : value.toFixed(4);
+  }
+  if (typeof value === "object" && value !== null) {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
 function validationHtml(validation) {
   if (!validation) return "";
   const rows = Object.entries(validation)
-    .filter(([k]) => k !== "passed")
-    .map(([k, v]) => {
-      let value = v;
-      if (typeof v === "number") value = Math.abs(v) < 1e-2 || Math.abs(v) > 1e4
-        ? v.toExponential(3) : v.toFixed(4);
-      if (typeof v === "object") value = JSON.stringify(v);
-      return `<dt>${k}</dt><dd>${value}</dd>`;
+    .filter(([key]) => !VALIDATION_SKIP.has(key))
+    .map(([key, value]) => {
+      const meta = VALIDATION_META[key] || { label: key };
+      let verdict = null;
+      if (meta.judge) {
+        try {
+          verdict = !!meta.judge(value, validation);
+        } catch (_error) {
+          verdict = null;
+        }
+      }
+      const valueClass = verdict === false ? "val-fail" : "";
+      const verdictHtml = verdict === null
+        ? `<span class="muted">-</span>`
+        : (verdict ? `<span class="validation-ok">合格</span>`
+                   : `<span class="val-fail">不合格</span>`);
+      return `<tr>
+        <td>${meta.label}</td>
+        <td class="num ${valueClass}">${formatValidationValue(value, meta)}</td>
+        <td class="muted">${meta.criterion || "参考値"}</td>
+        <td>${verdictHtml}</td></tr>`;
     }).join("");
   const badge = validation.passed
     ? `<span class="validation-ok">検証合格</span>`
     : `<span class="validation-ng">検証要確認</span>`;
   return `<div class="card"><h2>数値検証 ${badge}</h2>
-    <dl class="kv">${rows}</dl></div>`;
+    <table><thead><tr><th>項目</th><th class="num">値</th>
+    <th>判定基準</th><th>判定</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
 }
 
 function detailHeaderHtml(job) {
@@ -1259,6 +1340,8 @@ function renderDetail(job, plots, logLines = []) {
       <div id="plot-sheath" class="plot"></div></div></div>`;
     if (plots.model === "1d") {
       html += `<div class="card"><h2>IEDF / 符号付きIADF</h2>
+        <label style="flex-direction:row;align-items:center;gap:6px">
+          <input type="checkbox" id="iedf-peak-toggle"> 検出ピークマーカー（▼）を表示</label>
         <div id="plot-iedf" class="plot"></div>
         <div id="iedf-peaks"></div>
         <div class="plot-half-wrap"><div id="plot-iadf" class="plot"></div>
@@ -1603,6 +1686,7 @@ function drawDetailPlots(plots) {
 
     const iedfTraces = [];
     const peakRows = [];
+    const peakTraceIndices = [];
     plots.iedf.forEach((entry, i) => {
       const xs = centers(entry.edges_eV);
       const color = COLORS[i % COLORS.length];
@@ -1610,9 +1694,10 @@ function drawDetailPlots(plots) {
         name: `${entry.pressure_mTorr} mTorr`, line: { color } });
       const peaks = findPeaks(xs, entry.density);
       if (peaks.length) {
+        peakTraceIndices.push(iedfTraces.length);
         iedfTraces.push({
           x: peaks.map((p) => p.x), y: peaks.map((p) => p.y),
-          mode: "markers", showlegend: false,
+          mode: "markers", showlegend: false, visible: false,
           marker: { symbol: "triangle-down", size: 9, color },
           hovertemplate: "peak %{x:.1f} eV<extra></extra>",
         });
@@ -1627,8 +1712,15 @@ function drawDetailPlots(plots) {
       });
     });
     linePlot("plot-iedf", iedfTraces,
-      { title: "IEDF（▼=検出ピーク）", xtitle: "Ion impact energy [eV]",
+      { title: "IEDF", xtitle: "Ion impact energy [eV]",
         ytitle: "IEDF [1/eV]", rangeslider: true });
+    const peakToggle = document.getElementById("iedf-peak-toggle");
+    if (peakToggle) {
+      peakToggle.addEventListener("change", () => {
+        Plotly.restyle("plot-iedf", { visible: peakToggle.checked },
+                       peakTraceIndices);
+      });
+    }
     const riley = state.currentValidation
       && state.currentValidation.riley_delta_E_eV;
     document.getElementById("iedf-peaks").innerHTML = `<table><thead><tr>
