@@ -21,8 +21,8 @@ from bkmcore.schemas import Config1D, Config2D
 
 from fastapi import Header
 
-from .auth import (check_admin_password, require_admin,
-                   verify_admin_authorization)
+from .auth import (check_admin_password, is_admin_authorization,
+                   require_admin, verify_admin_authorization)
 from .db import AuditLog, Job, Waveform, get_session, utcnow
 from .jobs import manager
 from .settings import DATA_DIR, FRONTEND_DIR
@@ -247,10 +247,14 @@ def create_job(request: JobCreateRequest,
 def list_jobs(model: Optional[str] = None, status: Optional[str] = None,
               q: Optional[str] = None, include_deleted: bool = False,
               limit: int = Query(default=50, le=500), offset: int = 0,
-              session: Session = Depends(get_session)):
+              session: Session = Depends(get_session),
+              authorization: Optional[str] = Header(default=None)):
     query = session.query(Job)
     if not include_deleted:
         query = query.filter(~Job.deleted)
+    # 2Dの結果は管理者限定: 非管理者の一覧からは除外する
+    if not is_admin_authorization(authorization):
+        query = query.filter(Job.model != "2d")
     if model:
         query = query.filter(Job.model == model)
     if status:
@@ -266,21 +270,29 @@ def list_jobs(model: Optional[str] = None, status: Optional[str] = None,
 
 
 def get_job_or_404(job_id: str, session: Session, *,
-                   allow_deleted=False) -> Job:
+                   allow_deleted=False,
+                   authorization: Optional[str] = None) -> Job:
     job = session.get(Job, job_id)
     if job is None or (job.deleted and not allow_deleted):
         raise HTTPException(404, "ジョブが見つかりません。")
+    if job.model == "2d":
+        # 2Dの結果閲覧は管理者限定
+        verify_admin_authorization(authorization)
     return job
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str, session: Session = Depends(get_session)):
-    return job_to_dict(get_job_or_404(job_id, session), with_detail=True)
+def get_job(job_id: str, session: Session = Depends(get_session),
+            authorization: Optional[str] = Header(default=None)):
+    return job_to_dict(
+        get_job_or_404(job_id, session, authorization=authorization),
+        with_detail=True)
 
 
 @app.get("/api/jobs/{job_id}/plots")
-def get_job_plots(job_id: str, session: Session = Depends(get_session)):
-    job = get_job_or_404(job_id, session)
+def get_job_plots(job_id: str, session: Session = Depends(get_session),
+                  authorization: Optional[str] = Header(default=None)):
+    job = get_job_or_404(job_id, session, authorization=authorization)
     if job.status != "done" or not job.result_dir:
         raise HTTPException(409, f"ジョブは未完了です (status={job.status})。")
     path = Path(job.result_dir) / "plots.json"
@@ -290,8 +302,9 @@ def get_job_plots(job_id: str, session: Session = Depends(get_session)):
 
 
 @app.get("/api/jobs/{job_id}/log")
-def get_job_log(job_id: str, session: Session = Depends(get_session)):
-    job = get_job_or_404(job_id, session)
+def get_job_log(job_id: str, session: Session = Depends(get_session),
+                authorization: Optional[str] = Header(default=None)):
+    job = get_job_or_404(job_id, session, authorization=authorization)
     if not job.result_dir:
         return {"log": []}
     for name in ("outcome.json", "progress.json"):
@@ -306,8 +319,9 @@ def get_job_log(job_id: str, session: Session = Depends(get_session)):
 
 
 @app.get("/api/jobs/{job_id}/download/{kind}")
-def download(job_id: str, kind: str, session: Session = Depends(get_session)):
-    job = get_job_or_404(job_id, session)
+def download(job_id: str, kind: str, session: Session = Depends(get_session),
+             authorization: Optional[str] = Header(default=None)):
+    job = get_job_or_404(job_id, session, authorization=authorization)
     if not job.result_dir:
         raise HTTPException(404, "結果ファイルがありません。")
     files = {"npz": ("raw.npz", "application/octet-stream"),
@@ -325,17 +339,19 @@ def download(job_id: str, kind: str, session: Session = Depends(get_session)):
 
 
 @app.post("/api/jobs/{job_id}/cancel")
-def cancel_job(job_id: str, session: Session = Depends(get_session)):
-    get_job_or_404(job_id, session)
+def cancel_job(job_id: str, session: Session = Depends(get_session),
+               authorization: Optional[str] = Header(default=None)):
+    get_job_or_404(job_id, session, authorization=authorization)
     if not manager.cancel(job_id):
         raise HTTPException(409, "実行中/待機中のジョブではありません。")
     return {"ok": True}
 
 
 @app.delete("/api/jobs/{job_id}", dependencies=[Depends(require_admin)])
-def delete_job(job_id: str, session: Session = Depends(get_session)):
+def delete_job(job_id: str, session: Session = Depends(get_session),
+               authorization: Optional[str] = Header(default=None)):
     """管理者のみ: 論理削除（DB記録は残し、結果ファイルを物理削除）。"""
-    job = get_job_or_404(job_id, session)
+    job = get_job_or_404(job_id, session, authorization=authorization)
     if job.status in ("queued", "running"):
         raise HTTPException(409, "実行中のジョブは先にキャンセルしてください。")
     job.deleted = True
@@ -369,8 +385,9 @@ def _validate_collectors(collectors: list[CollectorDef]):
                                      "（x_max > x_min が必要）。")
 
 
-def _get_2d_done_job(job_id: str, session: Session) -> Job:
-    job = get_job_or_404(job_id, session)
+def _get_2d_done_job(job_id: str, session: Session,
+                     authorization: Optional[str] = None) -> Job:
+    job = get_job_or_404(job_id, session, authorization=authorization)
     if job.model != "2d":
         raise HTTPException(400, "コレクタは2Dジョブのみ対応です。")
     if job.status != "done" or not job.result_dir:
@@ -380,9 +397,10 @@ def _get_2d_done_job(job_id: str, session: Session) -> Job:
 
 @app.put("/api/jobs/{job_id}/collectors")
 def save_collectors(job_id: str, request: CollectorSaveRequest,
-                    session: Session = Depends(get_session)):
+                    session: Session = Depends(get_session),
+                    authorization: Optional[str] = Header(default=None)):
     """コレクタ定義をジョブに保存する（次回表示時に復元）。"""
-    job = _get_2d_done_job(job_id, session)
+    job = _get_2d_done_job(job_id, session, authorization)
     _validate_collectors(request.collectors)
     job.collectors_json = json.dumps(
         [c.model_dump() for c in request.collectors], ensure_ascii=False)
@@ -392,11 +410,12 @@ def save_collectors(job_id: str, request: CollectorSaveRequest,
 
 @app.post("/api/jobs/{job_id}/collectors/evaluate")
 def evaluate_collectors(job_id: str, request: CollectorEvalRequest,
-                        session: Session = Depends(get_session)):
+                        session: Session = Depends(get_session),
+                        authorization: Optional[str] = Header(default=None)):
     """保存済み生データ（raw.npz）から任意x範囲のIEDF/IADFを即時集計する。"""
     import numpy as np
 
-    job = _get_2d_done_job(job_id, session)
+    job = _get_2d_done_job(job_id, session, authorization)
     _validate_collectors(request.collectors)
     path = Path(job.result_dir) / "raw.npz"
     if not path.is_file():
@@ -481,14 +500,15 @@ def _flatten(d: dict, prefix="") -> dict:
 
 
 @app.get("/api/compare")
-def compare(ids: str, session: Session = Depends(get_session)):
+def compare(ids: str, session: Session = Depends(get_session),
+            authorization: Optional[str] = Header(default=None)):
     id_list = [i for i in ids.split(",") if i]
     if not 2 <= len(id_list) <= 6:
         raise HTTPException(400, "比較は2〜6件のジョブを指定してください。")
     entries = []
     flats = []
     for job_id in id_list:
-        job = get_job_or_404(job_id, session)
+        job = get_job_or_404(job_id, session, authorization=authorization)
         if job.status != "done" or not job.result_dir:
             raise HTTPException(409, f"ジョブ{job_id[:8]}は未完了です。")
         path = Path(job.result_dir) / "plots.json"

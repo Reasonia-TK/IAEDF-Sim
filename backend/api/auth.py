@@ -30,3 +30,12 @@ def verify_admin_authorization(authorization: Optional[str]):
 
 def require_admin(authorization: Optional[str] = Header(default=None)):
     verify_admin_authorization(authorization)
+
+
+def is_admin_authorization(authorization: Optional[str]) -> bool:
+    """例外を出さずに管理者ヘッダの有効性を返す。"""
+    try:
+        verify_admin_authorization(authorization)
+        return True
+    except HTTPException:
+        return False

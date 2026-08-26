@@ -33,10 +33,13 @@ def small_1d_config() -> dict:
     }
 
 
-def wait_done(client, job_id, timeout_s=120):
+ADMIN = {"Authorization": "Bearer test-admin-pass"}
+
+
+def wait_done(client, job_id, timeout_s=120, headers=None):
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        job = client.get(f"/api/jobs/{job_id}").json()
+        job = client.get(f"/api/jobs/{job_id}", headers=headers or {}).json()
         if job["status"] in ("done", "error", "cancelled"):
             return job
         time.sleep(0.5)
@@ -187,18 +190,30 @@ def test_collectors_2d(client):
     assert denied.status_code == 401
     response = client.post("/api/jobs", json={
         "model": "2d", "label": "コレクタテスト", "config": config},
-        headers={"Authorization": "Bearer test-admin-pass"})
+        headers=ADMIN)
     assert response.status_code == 200, response.text
     job_id = response.json()["id"]
-    job = wait_done(client, job_id, timeout_s=300)
+    job = wait_done(client, job_id, timeout_s=300, headers=ADMIN)
     assert job["status"] == "done", job.get("error")
+
+    # 2Dの閲覧も管理者限定
+    assert client.get(f"/api/jobs/{job_id}").status_code == 401
+    assert client.get(f"/api/jobs/{job_id}/plots").status_code == 401
+    listed = client.get("/api/jobs", params={"model": "2d"}).json()
+    assert listed["total"] == 0, "非管理者の一覧に2Dが出ないこと"
+    listed_admin = client.get("/api/jobs", params={"model": "2d"},
+                              headers=ADMIN).json()
+    assert listed_admin["total"] >= 1
 
     collectors = [
         {"label": "ウェハ中央", "x_min_m": 6.0e-3, "x_max_m": 10.0e-3},
         {"label": "リング", "x_min_m": 0.0, "x_max_m": 3.0e-3},
     ]
+    assert client.post(f"/api/jobs/{job_id}/collectors/evaluate",
+                       json={"collectors": collectors}).status_code == 401
     body = client.post(f"/api/jobs/{job_id}/collectors/evaluate",
-                       json={"collectors": collectors}).json()
+                       json={"collectors": collectors},
+                       headers=ADMIN).json()
     assert len(body["collectors"]) == 2
     center = body["collectors"][0]["results"][0]
     assert center["count"] > 0
@@ -210,14 +225,16 @@ def test_collectors_2d(client):
 
     # 保存 -> 詳細取得で復元される
     assert client.put(f"/api/jobs/{job_id}/collectors",
-                      json={"collectors": collectors}).json()["ok"]
-    detail = client.get(f"/api/jobs/{job_id}").json()
+                      json={"collectors": collectors},
+                      headers=ADMIN).json()["ok"]
+    detail = client.get(f"/api/jobs/{job_id}", headers=ADMIN).json()
     assert detail["collectors"][0]["label"] == "ウェハ中央"
 
     # 不正範囲は400
     bad = [{"label": "x", "x_min_m": 5e-3, "x_max_m": 1e-3}]
     assert client.post(f"/api/jobs/{job_id}/collectors/evaluate",
-                       json={"collectors": bad}).status_code == 400
+                       json={"collectors": bad},
+                       headers=ADMIN).status_code == 400
     # 1Dジョブには適用不可
     done_1d = client.get("/api/jobs",
                          params={"model": "1d", "status": "done"}).json()

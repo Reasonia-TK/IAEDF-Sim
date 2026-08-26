@@ -126,6 +126,8 @@ function fieldLabelText(key) {
 // ---------------- API ----------------
 
 async function api(path, options = {}) {
+  // 管理者ログイン中は全リクエストに認証ヘッダを付与（2D閲覧などに必要）
+  options.headers = { ...adminHeaders(), ...(options.headers || {}) };
   const response = await fetch(path, options);
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
@@ -1181,9 +1183,9 @@ function detailHeaderHtml(job) {
       <dt>状態</dt><dd><span class="status-chip status-${job.status}">${job.status}</span></dd>
     </dl>
     <div class="row" style="margin-top:10px">
-      <a href="/api/jobs/${job.id}/download/npz" download><button>生データNPZ</button></a>
-      <a href="/api/jobs/${job.id}/download/config" download><button>設定JSON</button></a>
-      <a href="/api/jobs/${job.id}/download/plots" download><button>プロットJSON</button></a>
+      <button data-dl="npz">生データNPZ</button>
+      <button data-dl="config">設定JSON</button>
+      <button data-dl="plots">プロットJSON</button>
       <button id="reuse-config">この設定を再利用</button>
     </div>
     ${job.error ? `<pre class="config-view">${job.error}</pre>` : ""}
@@ -1309,6 +1311,27 @@ function renderDetail(job, plots, logLines = []) {
   html += `<div class="card"><h2>設定</h2>
     <pre class="config-view">${JSON.stringify(job.config, null, 2)}</pre></div>`;
   container.innerHTML = html;
+
+  container.querySelectorAll("button[data-dl]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      try {
+        const response = await fetch(
+          `/api/jobs/${job.id}/download/${btn.dataset.dl}`,
+          { headers: adminHeaders() });
+        if (!response.ok) throw new Error(`${response.status}`);
+        const blob = await response.blob();
+        const disposition = response.headers.get("content-disposition") || "";
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = match ? match[1]
+          : `bkm_${job.id.slice(0, 8)}_${btn.dataset.dl}`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      } catch (error) {
+        window.alert(`ダウンロード失敗: ${error.message}`);
+      }
+    }));
 
   $("#reuse-config").addEventListener("click", () => {
     state.presetConfig = job.config;
@@ -1797,11 +1820,14 @@ function drawCompareIedf(normalize) {
 function refreshAdminUi() {
   $("#admin-badge").classList.toggle("hidden", !isAdmin());
   $("#admin-login-btn").textContent = isAdmin() ? "ログアウト" : "管理者ログイン";
-  // 2D計算は管理者限定: 非管理者にはモデル選択に表示しない
-  const option2d = document.querySelector('#model-select option[value="2d"]');
-  if (option2d) {
-    option2d.hidden = !isAdmin();
-    option2d.disabled = !isAdmin();
+  // 2Dは計算・閲覧とも管理者限定: 非管理者には選択肢を表示しない
+  for (const selector of ['#model-select option[value="2d"]',
+                          '#filter-model option[value="2d"]']) {
+    const option = document.querySelector(selector);
+    if (option) {
+      option.hidden = !isAdmin();
+      option.disabled = !isAdmin();
+    }
   }
   if (!isAdmin() && state.model === "2d") {
     state.model = "1d";
@@ -1815,7 +1841,8 @@ async function adminLoginToggle() {
   if (isAdmin()) {
     sessionStorage.removeItem("bkmAdminPass");
     refreshAdminUi();
-    renderHistory();
+    $("#job-detail").classList.add("hidden");
+    loadHistory();
     return;
   }
   const password = window.prompt("管理者パスワードを入力してください");
@@ -1827,7 +1854,7 @@ async function adminLoginToggle() {
     });
     sessionStorage.setItem("bkmAdminPass", password);
     refreshAdminUi();
-    renderHistory();
+    loadHistory();
   } catch (error) {
     window.alert(`ログイン失敗: ${error.message}`);
   }
