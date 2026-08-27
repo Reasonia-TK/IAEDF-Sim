@@ -4,14 +4,15 @@ from __future__ import annotations
 import numpy as np
 
 from ..constants import KB, MTORR_TO_PA, QE
-from ..mc_utils import isotropic_unit_vectors, periodic_table_at_time
+from ..mc_utils import boris_push, isotropic_unit_vectors, periodic_table_at_time
 from ..plasma import PlasmaDerived
-from ..schemas import GasConfig, SheathConfig, TpmcConfig
+from ..schemas import GasConfig, MagneticFieldConfig, SheathConfig, TpmcConfig
 
 
 def run_tpmc(pressure_mTorr, *, derived: PlasmaDerived, sheath: SheathConfig,
              gas: GasConfig, tpmc: TpmcConfig, sigma_cx, sigma_el,
              vsp_table, s_max, seed=None, n_particles=None,
+             magnetic: MagneticFieldConfig | None = None,
              progress_cb=None):
     n_particles = int(n_particles or tpmc.n_particles)
     rng = np.random.default_rng(tpmc.seed if seed is None else seed)
@@ -25,6 +26,9 @@ def run_tpmc(pressure_mTorr, *, derived: PlasmaDerived, sheath: SheathConfig,
     ion_sigma = np.sqrt(QE * tpmc.ion_temperature_eV / derived.ion_mass)
     alpha = sheath.potential_exponent
     bohm_speed = derived.bohm_speed
+    # 静磁場（イオンのみ）。全成分0なら従来と完全同一の経路を通す
+    b_on = magnetic is not None and magnetic.enabled
+    qm_dt = QE / derived.ion_mass * dt
 
     phase_time = rng.uniform(0.0, rf_period, n_particles)
     gid = np.arange(n_particles)
@@ -62,7 +66,12 @@ def run_tpmc(pressure_mTorr, *, derived: PlasmaDerived, sheath: SheathConfig,
             e_field = alpha * vsp / s_max * xi ** (alpha - 1.0)
         else:
             raise ValueError("SHEATH['model']はmoving_front/static_width")
-        vx += QE * e_field / derived.ion_mass * dt
+        if b_on:
+            vx, vy, vz = boris_push(vx, vy, vz, e_field, 0.0, 0.0,
+                                    magnetic.bx_T, magnetic.by_T,
+                                    magnetic.bz_T, qm_dt)
+        else:
+            vx += QE * e_field / derived.ion_mass * dt
 
         if gas_density > 0.0:
             speed = np.sqrt(vx * vx + vy * vy + vz * vz)

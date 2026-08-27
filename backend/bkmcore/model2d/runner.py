@@ -65,7 +65,8 @@ def run_2d(config: Config2D, *, xsec_text: str | None = None,
         common = dict(derived=derived, geo=geo, f2d=config.field2d,
                       gas=config.gas, tpmc=config.tpmc,
                       sigma_cx=sigma_cx, sigma_el=sigma_el, basis=basis,
-                      circuit_solution=circuit_solution, domain_top=domain_top)
+                      circuit_solution=circuit_solution, domain_top=domain_top,
+                      magnetic=config.magnetic)
         if config.space_charge.enabled:
             report(base, f"空間電荷反復中 p={pressure:g} mTorr")
             sc = build_space_charge(
@@ -97,7 +98,8 @@ def run_2d(config: Config2D, *, xsec_text: str | None = None,
 
     report(0.95, "数値検証を実行しています")
     validation = validate_2d(config, circuit_solution, kcl_residual,
-                             partition_error, basis, results)
+                             partition_error, basis, results,
+                             derived=derived, sheath_scale=sheath_scale)
     report(1.0, "完了")
     return {
         "derived": derived,
@@ -113,8 +115,10 @@ def run_2d(config: Config2D, *, xsec_text: str | None = None,
 
 
 def validate_2d(config: Config2D, circuit_solution, kcl_residual,
-                partition_error, basis, results):
-    """ノートブックの検証セルと同一のチェック。"""
+                partition_error, basis, results, *, derived, sheath_scale):
+    """ノートブックの検証セルと同一のチェック（+静磁場有効時の追加項目）。"""
+    from ..constants import QE
+    from ..model1d.runner import magnetic_validation
     largest_p = max(res["run"]["max_p_collision"] for res in results)
     collision_ok = largest_p <= config.tpmc.max_recommended_collision_probability
     sc_histories = {}
@@ -129,9 +133,21 @@ def validate_2d(config: Config2D, circuit_solution, kcl_residual,
                            circuit_solution["V_sr"].min()))
     reverse_sheath = min_sheath <= 0.0
     basis_residuals = {k: float(v["residual"]) for k, v in basis.items()}
+    vs_max = max(float(circuit_solution["V_sw"].max()),
+                 float(circuit_solution["V_sr"].max()))
+    vs_mean = max(float(np.mean(circuit_solution["V_sw"])), 1e-9)
+    magnetic_checks = magnetic_validation(
+        config.magnetic, derived,
+        dt=derived.rf_period / config.tpmc.steps_per_rf_period,
+        v_char=np.sqrt(2.0 * QE * vs_max / derived.ion_mass),
+        transit_s=3.0 * sheath_scale
+        * np.sqrt(derived.ion_mass / (2.0 * QE * vs_mean)),
+        sheath_scale=sheath_scale)
     passed = bool(collision_ok and sc_ok and not reverse_sheath
-                  and partition_error < 1.0e-3)
+                  and partition_error < 1.0e-3
+                  and magnetic_checks.get("gyration_resolution_ok", True))
     return {
+        **magnetic_checks,
         "periodic_error_V": float(circuit_solution["periodic_error_V"]),
         "periodic_cycles": int(circuit_solution["cycles"]),
         "kcl_max_relative_residual": float(kcl_residual),

@@ -74,7 +74,7 @@ def build_space_charge(pressure_mTorr, seed, *, derived: PlasmaDerived,
                        gas: GasConfig, tpmc: Tpmc2DConfig,
                        sc: SpaceChargeConfig, sigma_cx, sigma_el,
                        basis, circuit_solution, domain_top,
-                       log_cb=None, progress_cb=None):
+                       magnetic=None, log_cb=None, progress_cb=None):
     field2d = basis["plasma"]
     conductor = field2d["conductor"]
     solid = field2d["solid"]
@@ -102,7 +102,7 @@ def build_space_charge(pressure_mTorr, seed, *, derived: PlasmaDerived,
                           basis=basis, circuit_solution=circuit_solution,
                           domain_top=domain_top,
                           correction={"Ex": ex_sc, "Ey": ey_sc},
-                          collect_density=True)
+                          collect_density=True, magnetic=magnetic)
         ni = gaussian_smooth_2d(dep["ion_density_m3"],
                                 sc.density_smoothing_sigma_cells)
         ni = np.clip(ni, 0.0, sc.ion_density_clip_factor * derived.n_s)

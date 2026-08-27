@@ -70,6 +70,26 @@ class TpmcConfig(BaseModel):
     max_recommended_collision_probability: float = 0.05
 
 
+class MagneticFieldConfig(BaseModel):
+    """静磁場 [T]（イオンにのみ作用。全成分0で無効=従来と同一経路）。
+
+    座標系:
+      1D: x=シース深さ方向（イオン入射方向）、y=面内横方向（IADF角度の基準）、z=第3軸
+      2D: x=横方向（ジオメトリのx）、y=鉛直上向き、z=面外（紙面手前）
+    """
+    bx_T: float = 0.0
+    by_T: float = 0.0
+    bz_T: float = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self.bx_T != 0.0 or self.by_T != 0.0 or self.bz_T != 0.0
+
+    @property
+    def magnitude(self) -> float:
+        return float((self.bx_T**2 + self.by_T**2 + self.bz_T**2) ** 0.5)
+
+
 class PlotConfig(BaseModel):
     energy_bins: int = 200
     angle_bins: int = 120
@@ -85,6 +105,7 @@ class Config1D(BaseModel):
     sheath: SheathConfig = Field(default_factory=SheathConfig)
     gas: GasConfig = Field(default_factory=GasConfig)
     tpmc: TpmcConfig = Field(default_factory=TpmcConfig)
+    magnetic: MagneticFieldConfig = Field(default_factory=MagneticFieldConfig)
     plot: PlotConfig = Field(default_factory=PlotConfig)
 
 
@@ -273,4 +294,5 @@ class Config2D(BaseModel):
     space_charge: SpaceChargeConfig = Field(default_factory=SpaceChargeConfig)
     gas: Gas2DConfig = Field(default_factory=Gas2DConfig)
     tpmc: Tpmc2DConfig = Field(default_factory=Tpmc2DConfig)
+    magnetic: MagneticFieldConfig = Field(default_factory=MagneticFieldConfig)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)

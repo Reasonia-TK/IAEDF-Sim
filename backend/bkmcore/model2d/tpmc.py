@@ -4,9 +4,10 @@ from __future__ import annotations
 import numpy as np
 
 from ..constants import KB, MTORR_TO_PA, QE
-from ..mc_utils import isotropic_unit_vectors, periodic_table_at_time
+from ..mc_utils import boris_push, isotropic_unit_vectors, periodic_table_at_time
 from ..plasma import PlasmaDerived
-from ..schemas import Field2DConfig, GasConfig, GeometryConfig, Tpmc2DConfig
+from ..schemas import (Field2DConfig, GasConfig, GeometryConfig,
+                       MagneticFieldConfig, Tpmc2DConfig)
 from .field import MAT_WAFER, material_of, segment_index_of, surface_height
 
 
@@ -41,7 +42,8 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
                 derived: PlasmaDerived, geo: GeometryConfig,
                 f2d: Field2DConfig, gas: GasConfig, tpmc: Tpmc2DConfig,
                 sigma_cx, sigma_el, basis, circuit_solution, domain_top,
-                correction=None, collect_density=False, progress_cb=None):
+                correction=None, collect_density=False,
+                magnetic: MagneticFieldConfig | None = None, progress_cb=None):
     rng = np.random.default_rng(seed)
     field2d = basis["plasma"]
     nx, ny = int(f2d.nx), int(f2d.ny)
@@ -56,6 +58,9 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
     h_slope = min(dx * 0.2,
                   geo.smoothing_m * 0.1 if geo.smoothing_m > 0 else dx * 0.2)
     bohm_speed = derived.bohm_speed
+    # 静磁場（イオンのみ）。全成分0なら従来と完全同一の経路を通す
+    b_on = magnetic is not None and magnetic.enabled
+    qm_dt = QE / derived.ion_mass * dt
 
     gid = np.arange(n_particles)
     x = rng.uniform(0.0, length, n_particles)
@@ -95,8 +100,13 @@ def run_tpmc_2d(pressure_mTorr, *, n_particles, seed,
             ix = np.clip(np.floor(x / dx).astype(np.int64), 0, nx - 1)
             iy = np.clip(np.floor(y / dy).astype(np.int64), 0, ny - 1)
             np.add.at(deposit, (iy, ix), dt)
-        vx += QE * ex / derived.ion_mass * dt
-        vy += QE * ey / derived.ion_mass * dt
+        if b_on:
+            vx, vy, vz = boris_push(vx, vy, vz, ex, ey, 0.0,
+                                    magnetic.bx_T, magnetic.by_T,
+                                    magnetic.bz_T, qm_dt)
+        else:
+            vx += QE * ex / derived.ion_mass * dt
+            vy += QE * ey / derived.ion_mass * dt
 
         if gas_density > 0.0:
             speed = np.sqrt(vx * vx + vy * vy + vz * vz)

@@ -49,6 +49,7 @@ def run_1d(config: Config1D, *, xsec_text: str | None = None, progress_cb=None):
             tpmc=config.tpmc, sigma_cx=sigma_cx, sigma_el=sigma_el,
             vsp_table=vsp_table, s_max=s_max,
             seed=config.tpmc.seed + 10_000 * k,
+            magnetic=config.magnetic,
             progress_cb=lambda f, _b=base, _s=span: report(_b + _s * f, None))
         results.append(result)
     tpmc_seconds = time.perf_counter() - t0
@@ -79,7 +80,8 @@ def validate_1d(config: Config1D, derived, circuit_solution, results,
         tpmc=config.tpmc, sigma_cx=sigma_cx, sigma_el=sigma_el,
         vsp_table=np.full_like(vsp_table, static_v), s_max=s_max,
         seed=config.tpmc.seed + 999_999,
-        n_particles=min(3000, config.tpmc.n_particles))
+        n_particles=min(3000, config.tpmc.n_particles),
+        magnetic=config.magnetic)
     ok = static_check["reached"]
     initial_ke = 0.5 * derived.ion_mass * (
         derived.bohm_speed**2
@@ -94,7 +96,14 @@ def validate_1d(config: Config1D, derived, circuit_solution, results,
     v_tilde_eff = 0.5 * (vsp_table.max() - vsp_table.min())
     de_riley = 2.0 * v_tilde_eff / np.sqrt(1.0 + (omega * tau_ion / 4.0) ** 2)
 
+    magnetic_checks = magnetic_validation(
+        config.magnetic, derived,
+        dt=derived.rf_period / config.tpmc.steps_per_rf_period,
+        v_char=np.sqrt(2.0 * QE * vsp_max / derived.ion_mass),
+        transit_s=tau_ion, sheath_scale=s_max)
+
     return {
+        **magnetic_checks,
         "static_expected_gain_eV": static_v,
         "static_tpmc_gain_eV": gain,
         "energy_conservation_rel_error": float(energy_rel_error),
@@ -106,5 +115,26 @@ def validate_1d(config: Config1D, derived, circuit_solution, results,
         "riley_delta_E_eV": float(de_riley),
         "riley_v_tilde_eff_V": float(v_tilde_eff),
         "omega_tau_ion_over_4": float(omega * tau_ion / 4.0),
-        "passed": bool(energy_rel_error < 1.0e-3 and collision_ok),
+        "passed": bool(energy_rel_error < 1.0e-3 and collision_ok
+                       and magnetic_checks.get("gyration_resolution_ok", True)),
+    }
+
+
+def magnetic_validation(magnetic, derived, *, dt, v_char, transit_s,
+                        sheath_scale):
+    """静磁場有効時の検証項目（無効時は空dictを返す）。
+
+    Borisは大きなω_ci·dtでも安定だが、精度確保の目安として0.3未満を要求する。
+    """
+    if magnetic is None or not magnetic.enabled:
+        return {}
+    omega_ci = QE * magnetic.magnitude / derived.ion_mass
+    gyroradius = v_char / omega_ci
+    return {
+        "magnetic_field_T": float(magnetic.magnitude),
+        "omega_ci_dt": float(omega_ci * dt),
+        "gyration_resolution_ok": bool(omega_ci * dt < 0.3),
+        "ion_gyroradius_m": float(gyroradius),
+        "gyroradius_to_sheath_ratio": float(gyroradius / sheath_scale),
+        "magnetic_deflection_deg": float(np.degrees(omega_ci * transit_s)),
     }

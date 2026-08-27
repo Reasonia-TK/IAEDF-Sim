@@ -27,6 +27,7 @@ const GROUP_LABELS = {
   sheath: "シースモデル", gas: "ガス・衝突断面積", tpmc: "TPMC粒子計算",
   plot: "プロット", geometry: "形状", field2d: "2D場ソルバ",
   space_charge: "空間電荷補正", analysis: "端傾き解析",
+  magnetic: "静磁場（イオンのみ）",
 };
 
 const ENUMS = {
@@ -116,6 +117,9 @@ const LABELS = {
   bin_width_m: ["距離ビン幅 [m]", ""],
   max_distance_m: ["最大距離 [m]", ""],
   affected_threshold_deg: ["影響判定しきい値 [deg]", ""],
+  bx_T: ["Bx [T]", "1D: シース深さ方向（イオン入射方向） / 2D: 横方向"],
+  by_T: ["By [T]", "1D: 面内横方向（IADF角度の基準） / 2D: 鉛直上向き"],
+  bz_T: ["Bz [T]", "1D: 第3軸 / 2D: 面外（紙面手前）"],
 };
 
 function fieldLabelText(key) {
@@ -295,6 +299,13 @@ function buildForm() {
         <details style="margin-top:6px"><summary class="muted">数値で編集（x_mm, y_mm, 次セグメントの材質 を1行に1点）</summary>
           <textarea id="geo-points-text" rows="7" style="width:100%;font-family:monospace;font-size:12px"></textarea>
         </details>`;
+    } else if (group === "magnetic") {
+      extra = `
+        <p class="muted" style="margin:6px 0 2px">
+          一様な静磁場をイオンにのみ作用させる（Boris法）。全成分0で無効。
+          電子・シース構造は無磁化のまま（適用限界はモデル解説参照）。
+        </p>
+        <div id="mag-diagram"></div>`;
     }
     const card = document.createElement("div");
     card.className = "card config-group";
@@ -316,6 +327,7 @@ function buildForm() {
     renderGeometryEditor();
     syncGeoTextarea();
   }
+  renderMagneticDiagram();
   updateTimeEstimate();
 
 }
@@ -349,6 +361,9 @@ function onConfigFormChange(event) {
   }
   if (target.id && target.id.startsWith("f|geometry|")) {
     renderGeometryEditor();
+  }
+  if (target.id && target.id.startsWith("f|magnetic|")) {
+    renderMagneticDiagram();
   }
   updateTimeEstimate();
 }
@@ -390,6 +405,97 @@ async function previewWaveform(group) {
   } catch (error) {
     statNode.textContent = `プレビュー失敗: ${error.message}`;
   }
+}
+
+// ---------------- 静磁場の向き図 ----------------
+
+// 擬似3D投影でB方向を可視化する。1D: x=下向き(イオン入射)/y=右/z=紙面手前、
+// 2D: x=右/y=上/z=紙面手前。zは左下向きの斜軸として描く。
+function renderMagneticDiagram() {
+  const div = document.getElementById("mag-diagram");
+  const defaults = state.defaults[state.model];
+  if (!div || !defaults || !defaults.magnetic) return;
+  const read = (key) => {
+    try { return readField("magnetic", key, defaults.magnetic[key]); }
+    catch (_error) { return 0; }
+  };
+  const bx = read("bx_T"), by = read("by_T"), bz = read("bz_T");
+  const mag = Math.sqrt(bx * bx + by * by + bz * bz);
+  const is2d = state.model === "2d";
+  const ux = is2d ? [1, 0] : [0, 1];
+  const uy = is2d ? [0, -1] : [1, 0];
+  const uz = [-0.55, 0.45];
+  const O = [215, 118];
+  const axis = (v, label) => {
+    const ex = O[0] + 46 * v[0], ey = O[1] + 46 * v[1];
+    // ラベルは軸の垂直方向に少しずらし、B矢印と重なっても読めるようにする
+    const lx = O[0] + 60 * v[0] - 9 * v[1], ly = O[1] + 60 * v[1] + 9 * v[0];
+    return `<line x1="${O[0]}" y1="${O[1]}" x2="${ex}" y2="${ey}"
+      stroke="#607d8b" stroke-width="1.6" marker-end="url(#mag-ax)"/>
+      <text x="${lx}" y="${ly}" fill="#607d8b" font-size="13"
+        text-anchor="middle" dominant-baseline="middle">${label}</text>`;
+  };
+  const scene = is2d ? `
+      <path d="M40 205 L110 205 L118 188 L262 188 L270 205 L340 205"
+        fill="none" stroke="#90a4ae" stroke-width="2.5"/>
+      <text x="44" y="224" fill="#90a4ae" font-size="11">ウェハ / リング表面</text>
+      <line x1="70" y1="55" x2="70" y2="165" stroke="#1565c0"
+        stroke-width="2" marker-end="url(#mag-ion)"/>
+      <text x="78" y="112" fill="#1565c0" font-size="11">イオン</text>` : `
+      <line x1="40" y1="34" x2="340" y2="34" stroke="#90a4ae"
+        stroke-width="1.5" stroke-dasharray="6 4"/>
+      <text x="44" y="26" fill="#90a4ae" font-size="11">シース端 (x = 0)</text>
+      <rect x="40" y="198" width="300" height="9" fill="#90a4ae"/>
+      <text x="44" y="224" fill="#90a4ae" font-size="11">電極面 (x = s_max)</text>
+      <line x1="70" y1="55" x2="70" y2="160" stroke="#1565c0"
+        stroke-width="2" marker-end="url(#mag-ion)"/>
+      <text x="78" y="110" fill="#1565c0" font-size="11">イオン</text>`;
+  let bMark;
+  let caption;
+  if (mag === 0) {
+    bMark = `<text x="${O[0]}" y="${O[1] - 66}" fill="#7c8796" font-size="12"
+      text-anchor="middle">B = 0（磁場なし）</text>`;
+    caption = "全成分0のため磁場は作用しません。";
+  } else {
+    const dx = (bx * ux[0] + by * uy[0] + bz * uz[0]) / mag;
+    const dy = (bx * ux[1] + by * uy[1] + bz * uz[1]) / mag;
+    const norm = Math.sqrt(dx * dx + dy * dy);
+    if (norm < 0.08) {
+      // 視線方向とほぼ平行: ⊙(手前)/⊗(奥)で表す
+      const sym = bz >= 0 ? "⊙" : "⊗";
+      bMark = `<circle cx="${O[0]}" cy="${O[1]}" r="11" fill="none"
+          stroke="#d81b60" stroke-width="2"/>
+        <text x="${O[0]}" y="${O[1] + 1}" fill="#d81b60" font-size="15"
+          text-anchor="middle" dominant-baseline="middle">${sym}</text>
+        <text x="${O[0] + 20}" y="${O[1] - 12}" fill="#d81b60"
+          font-size="14" font-weight="bold">B</text>`;
+    } else {
+      const ex = O[0] + 66 * dx / norm, ey = O[1] + 66 * dy / norm;
+      bMark = `<line x1="${O[0]}" y1="${O[1]}" x2="${ex}" y2="${ey}"
+          stroke="#d81b60" stroke-width="2.6" marker-end="url(#mag-b)"/>
+        <text x="${O[0] + 80 * dx / norm}" y="${O[1] + 80 * dy / norm}"
+          fill="#d81b60" font-size="14" font-weight="bold"
+          text-anchor="middle" dominant-baseline="middle">B</text>`;
+    }
+    caption = `|B| = ${fmtNum(Number(mag.toPrecision(4)))} T　方向 (${(bx / mag).toFixed(2)}, `
+      + `${(by / mag).toFixed(2)}, ${(bz / mag).toFixed(2)})`;
+  }
+  div.innerHTML = `
+    <svg viewBox="0 0 380 235" style="max-width:400px;width:100%;display:block">
+      <defs>
+        <marker id="mag-ax" markerWidth="8" markerHeight="8" refX="6" refY="3"
+          orient="auto"><path d="M0 0 L7 3 L0 6 Z" fill="#607d8b"/></marker>
+        <marker id="mag-b" markerWidth="9" markerHeight="9" refX="7" refY="3.5"
+          orient="auto"><path d="M0 0 L8 3.5 L0 7 Z" fill="#d81b60"/></marker>
+        <marker id="mag-ion" markerWidth="8" markerHeight="8" refX="6" refY="3"
+          orient="auto"><path d="M0 0 L7 3 L0 6 Z" fill="#1565c0"/></marker>
+      </defs>
+      ${scene}
+      ${axis(ux, "x")}${axis(uy, "y")}${axis(uz, "z")}
+      ${bMark}
+    </svg>
+    <p class="muted" style="margin:2px 0 0">${caption}
+      （zは紙面手前向き。図では左下への斜軸として表示）</p>`;
 }
 
 // ---------------- 2Dスケッチエディタv2（セグメント材質指定・鏡像壁） ----------------
@@ -1203,10 +1309,26 @@ const VALIDATION_META = {
     criterion: "> 0（逆シースは適用外）",
     judge: (v) => v > 0,
   },
+  magnetic_field_T: { label: "静磁場強度 |B| [T]" },
+  omega_ci_dt: {
+    label: "ω_ci·Δt（ジャイロ位相分解能）",
+    criterion: "< 0.3（超過時はsteps_per_rf_periodを増やす）",
+    judge: (_v, val) => val.gyration_resolution_ok,
+  },
+  ion_gyroradius_m: { label: "イオンジャイロ半径 [m]" },
+  gyroradius_to_sheath_ratio: {
+    label: "ジャイロ半径/シース幅比",
+    criterion: "参考値（≫1で弱磁化=小偏向、≲1で強磁化）",
+  },
+  magnetic_deflection_deg: {
+    label: "磁気偏向の目安 [deg]",
+    criterion: "参考値（ω_ci×通過時間）",
+  },
 };
 const VALIDATION_SKIP = new Set(["passed", "energy_conservation_ok",
                                  "collision_probability_ok",
-                                 "reverse_sheath_warning"]);
+                                 "reverse_sheath_warning",
+                                 "gyration_resolution_ok"]);
 
 function formatValidationValue(value, meta) {
   if (meta && meta.format) return meta.format(value);
