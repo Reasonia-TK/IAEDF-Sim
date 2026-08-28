@@ -258,3 +258,24 @@ def test_compare(client):
     assert len(body["jobs"]) == 2
     diff_keys = [d["key"] for d in body["config_diff"]]
     assert "plasma.electron_temperature_eV" in diff_keys
+
+
+def test_jobs_list_tolerates_legacy_nan_json(client):
+    """旧バージョンがDBへ書いたNaN入りJSONでも一覧が500にならないこと。"""
+    from api.db import SessionLocal, Job
+    done = client.get("/api/jobs", params={"status": "done"}).json()["jobs"]
+    job_id = done[0]["id"]
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        original = job.summary_json
+        job.summary_json = '{"rows": [{"mean_energy_eV": NaN}]}'
+        session.commit()
+    try:
+        response = client.get("/api/jobs")
+        assert response.status_code == 200
+        row = next(j for j in response.json()["jobs"] if j["id"] == job_id)
+        assert row["summary"]["rows"][0]["mean_energy_eV"] is None
+    finally:
+        with SessionLocal() as session:
+            session.get(Job, job_id).summary_json = original
+            session.commit()

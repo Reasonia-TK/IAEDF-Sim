@@ -74,6 +74,15 @@ class CollectorEvalRequest(BaseModel):
     energy_max_eV: Optional[float] = None
 
 
+def load_json_relaxed(text: str):
+    """DB/結果ファイルのJSONを読み込む。
+
+    旧バージョンが書き出したNaN/Infinity（JSON非準拠）はレスポンス生成時に
+    500を引き起こすためNoneへ変換する。
+    """
+    return json.loads(text, parse_constant=lambda _const: None)
+
+
 def job_to_dict(job: Job, *, with_detail=False) -> dict:
     row = {
         "id": job.id,
@@ -87,14 +96,15 @@ def job_to_dict(job: Job, *, with_detail=False) -> dict:
         "progress": job.progress,
         "progress_text": job.progress_text,
         "deleted": job.deleted,
-        "summary": json.loads(job.summary_json) if job.summary_json else None,
-        "validation": (json.loads(job.validation_json)
+        "summary": (load_json_relaxed(job.summary_json)
+                    if job.summary_json else None),
+        "validation": (load_json_relaxed(job.validation_json)
                        if job.validation_json else None),
         "error": job.error_text,
     }
     if with_detail:
-        row["config"] = json.loads(job.config_json)
-        row["collectors"] = (json.loads(job.collectors_json)
+        row["config"] = load_json_relaxed(job.config_json)
+        row["collectors"] = (load_json_relaxed(job.collectors_json)
                              if job.collectors_json else [])
     return row
 
@@ -298,6 +308,11 @@ def get_job_plots(job_id: str, session: Session = Depends(get_session),
     path = Path(job.result_dir) / "plots.json"
     if not path.is_file():
         raise HTTPException(404, "プロットデータが見つかりません。")
+    text = path.read_text(encoding="utf-8")
+    if "NaN" in text or "Infinity" in text:
+        # 旧バージョンのplots.jsonはNaNを含むことがあり、そのままでは
+        # ブラウザ側のJSON.parseが失敗するためNoneへ変換して返す
+        return JSONResponse(load_json_relaxed(text))
     return FileResponse(path, media_type="application/json")
 
 
@@ -514,8 +529,8 @@ def compare(ids: str, session: Session = Depends(get_session),
         path = Path(job.result_dir) / "plots.json"
         if not path.is_file():
             raise HTTPException(404, f"ジョブ{job_id[:8]}のプロットが見つかりません。")
-        plots = json.loads(path.read_text(encoding="utf-8"))
-        config = json.loads(job.config_json)
+        plots = load_json_relaxed(path.read_text(encoding="utf-8"))
+        config = load_json_relaxed(job.config_json)
         flats.append(_flatten(config))
         entries.append({
             "id": job.id, "label": job.label or job.id[:8],
