@@ -5,6 +5,7 @@ import numpy as np
 
 from .model2d.field import (MAT_INSULATOR, MAT_RING,
                             wafer_ranges as _wafer_ranges)
+from .plasma import child_langmuir_width
 from .schemas import Config1D, Config2D
 
 
@@ -41,6 +42,26 @@ def build_plots_1d(output: dict, config: Config1D) -> dict:
         "V_p": _finite_list(_downsample(circuit["V_p"])),
         "V_sp": _finite_list(_downsample(circuit["V_sp"])),
         "V_sg": _finite_list(_downsample(circuit["V_sg"])),
+    }
+
+    # シース厚さ波形: TPMCの電子フロント s_e(t) と回路容量のChild瞬時幅
+    derived = output["derived"]
+    s_max = float(output["s_max"])
+    vsp = np.asarray(circuit["V_sp"])
+    vsp_max = float(np.max(vsp))
+    if config.sheath.model == "moving_front":
+        s_e = s_max * (np.maximum(vsp, 1e-9) / vsp_max) \
+            ** config.sheath.front_width_exponent
+    else:
+        s_e = np.full_like(vsp, s_max)
+    sheath_plot = {
+        "phase_deg": _finite_list(_downsample(deg)),
+        "s_e_mm": _finite_list(_downsample(s_e * 1e3)),
+        "s_cl_powered_mm": _finite_list(_downsample(
+            child_langmuir_width(vsp, derived) * 1e3)),
+        "s_cl_ground_mm": _finite_list(_downsample(
+            child_langmuir_width(np.asarray(circuit["V_sg"]), derived) * 1e3)),
+        "s_max_mm": s_max * 1e3,
     }
 
     all_energy = np.concatenate([r["energy_eV"][r["reached"]] for r in results])
@@ -97,6 +118,7 @@ def build_plots_1d(output: dict, config: Config1D) -> dict:
     return {
         "model": "1d",
         "vp_waveform": vp_plot,
+        "sheath_width": sheath_plot,
         "energy_max_eV": energy_max,
         "summary_rows": summary_rows,
         "iedf": iedf,
@@ -146,6 +168,17 @@ def build_plots_2d(output: dict, config: Config2D) -> dict:
         "V_p": _finite_list(_downsample(circuit["V_p"])),
         "V_sw": _finite_list(_downsample(circuit["V_sw"])),
         "V_sr": _finite_list(_downsample(circuit["V_sr"])),
+    }
+
+    # シース厚さ波形（回路容量と同じChild瞬時幅。2Dは電子フロントを持たない）
+    derived = output["derived"]
+    sheath_plot = {
+        "phase_deg": _finite_list(_downsample(deg)),
+        "s_cl_wafer_mm": _finite_list(_downsample(
+            child_langmuir_width(np.asarray(circuit["V_sw"]), derived) * 1e3)),
+        "s_cl_ring_mm": _finite_list(_downsample(
+            child_langmuir_width(np.asarray(circuit["V_sr"]), derived) * 1e3)),
+        "s_max_mm": float(output["sheath_scale"]) * 1e3,
     }
 
     surface = output["basis"]["plasma"]
@@ -244,6 +277,7 @@ def build_plots_2d(output: dict, config: Config2D) -> dict:
     return {
         "model": "2d",
         "vp_waveform": vp_plot,
+        "sheath_width": sheath_plot,
         "geometry": geometry_plot,
         "profiles": profiles,
         "iedf": iedf,

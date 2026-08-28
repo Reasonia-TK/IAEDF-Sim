@@ -1395,17 +1395,25 @@ function exportCsv(kind, job, plots) {
   const wf = plots.vp_waveform;
   const lines = [];
   if (kind === "waveform") {
+    // シース厚さ列は旧ジョブのplots.jsonに無いことがあるため存在時のみ付ける
+    const sw = plots.sheath_width;
     if (plots.model === "1d") {
       lines.push("phase_deg,V_e_driven_V,V_p_plasma_V,"
-                 + "V_sp_powered_sheath_V,V_sg_ground_sheath_V");
+                 + "V_sp_powered_sheath_V,V_sg_ground_sheath_V"
+                 + (sw ? ",s_e_electron_front_mm,s_CL_powered_mm,"
+                         + "s_CL_ground_mm" : ""));
       wf.phase_deg.forEach((p, i) => lines.push(
-        `${p},${wf.V_e[i]},${wf.V_p[i]},${wf.V_sp[i]},${wf.V_sg[i]}`));
+        `${p},${wf.V_e[i]},${wf.V_p[i]},${wf.V_sp[i]},${wf.V_sg[i]}`
+        + (sw ? `,${sw.s_e_mm[i]},${sw.s_cl_powered_mm[i]},`
+                + `${sw.s_cl_ground_mm[i]}` : "")));
     } else {
       lines.push("phase_deg,V_w_wafer_V,V_r_ring_V,V_p_plasma_V,"
-                 + "V_sw_wafer_sheath_V,V_sr_ring_sheath_V");
+                 + "V_sw_wafer_sheath_V,V_sr_ring_sheath_V"
+                 + (sw ? ",s_CL_wafer_mm,s_CL_ring_mm" : ""));
       wf.phase_deg.forEach((p, i) => lines.push(
         `${p},${wf.V_w[i]},${wf.V_r[i]},${wf.V_p[i]},`
-        + `${wf.V_sw[i]},${wf.V_sr[i]}`));
+        + `${wf.V_sw[i]},${wf.V_sr[i]}`
+        + (sw ? `,${sw.s_cl_wafer_mm[i]},${sw.s_cl_ring_mm[i]}` : "")));
     }
     csvDownload(name("waveforms"), lines);
   } else if (kind === "iedf") {
@@ -1544,7 +1552,10 @@ function renderDetail(job, plots, logLines = []) {
     html += summaryTableHtml(plots.summary_rows, plots.model);
     html += `<div class="card"><h2>プラズマ電位・シース電圧</h2>
       <div class="plot-half-wrap"><div id="plot-vp" class="plot"></div>
-      <div id="plot-sheath" class="plot"></div></div></div>`;
+      <div id="plot-sheath" class="plot"></div>
+      ${plots.sheath_width
+        ? `<div id="plot-sheath-width" class="plot"></div>` : ""}
+      </div></div>`;
     if (plots.model === "1d") {
       html += `<div class="card"><h2>IEDF / 符号付きIADF</h2>
         <label style="flex-direction:row;align-items:center;gap:6px">
@@ -1903,6 +1914,18 @@ function drawDetailPlots(plots) {
       { x: wf.phase_deg, y: wf.V_sp, name: "powered V_sp", line: { color: COLORS[0] } },
       { x: wf.phase_deg, y: wf.V_sg, name: "ground V_sg", line: { color: COLORS[1] } },
     ], { title: "シース電圧", xtitle: "RF phase [deg]", ytitle: "Sheath voltage [V]" });
+    const sw1 = plots.sheath_width;
+    if (sw1 && document.getElementById("plot-sheath-width")) {
+      linePlot("plot-sheath-width", [
+        { x: sw1.phase_deg, y: sw1.s_e_mm, name: "electron front s_e",
+          line: { color: COLORS[0] } },
+        { x: sw1.phase_deg, y: sw1.s_cl_powered_mm, name: "Child s_CL(V_sp)",
+          line: { color: COLORS[1], dash: "dash" } },
+        { x: sw1.phase_deg, y: sw1.s_cl_ground_mm, name: "Child s_CL(V_sg)",
+          line: { color: COLORS[2], dash: "dot" } },
+      ], { title: "シース厚さの振動", xtitle: "RF phase [deg]",
+           ytitle: "Sheath width [mm]" });
+    }
 
     const iedfTraces = [];
     const peakRows = [];
@@ -1973,6 +1996,16 @@ function drawDetailPlots(plots) {
       { x: wf.phase_deg, y: wf.V_sw, name: "V_sw", line: { color: COLORS[0] } },
       { x: wf.phase_deg, y: wf.V_sr, name: "V_sr", line: { color: COLORS[1], dash: "dash" } },
     ], { title: "シース電圧", xtitle: "RF phase [deg]", ytitle: "Sheath voltage [V]" });
+    const sw2 = plots.sheath_width;
+    if (sw2 && document.getElementById("plot-sheath-width")) {
+      linePlot("plot-sheath-width", [
+        { x: sw2.phase_deg, y: sw2.s_cl_wafer_mm, name: "wafer s_CL(V_sw)",
+          line: { color: COLORS[0] } },
+        { x: sw2.phase_deg, y: sw2.s_cl_ring_mm, name: "ring s_CL(V_sr)",
+          line: { color: COLORS[1], dash: "dash" } },
+      ], { title: "シース厚さの振動（Child瞬時幅）", xtitle: "RF phase [deg]",
+           ytitle: "Sheath width [mm]" });
+    }
 
     const geometry = plots.geometry;
     const edgePositions = [];

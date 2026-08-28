@@ -120,6 +120,25 @@ class TestSmoke:
         assert len(plots["iadf"][0]["density"]) == 240
         assert len(plots["iaedf"][0]["angle_edges_deg"]) == 121
 
+    def test_sheath_width_plot(self, xsec_text):
+        from bkmcore.report import build_plots_1d
+        config = Config1D()
+        config.waveform = WaveformConfig(mode="sinusoid")
+        config.tpmc.n_particles = 500
+        config.gas.pressures_mTorr = [0.0]
+        output = run_1d(config, xsec_text=xsec_text)
+        sw = build_plots_1d(output, config)["sheath_width"]
+        n = len(sw["phase_deg"])
+        assert len(sw["s_e_mm"]) == n
+        assert len(sw["s_cl_powered_mm"]) == n == len(sw["s_cl_ground_mm"])
+        # moving_frontのs_eはVsp最大位相でs_maxに一致し、それ以下で振動する
+        # （プロットは512点へ間引くため最大位相の点がわずかにずれ得る）
+        assert max(sw["s_e_mm"]) == pytest.approx(sw["s_max_mm"], rel=1e-3)
+        assert max(sw["s_e_mm"]) <= sw["s_max_mm"] * (1 + 1e-9)
+        assert min(sw["s_e_mm"]) < 0.5 * sw["s_max_mm"]
+        # 接地側シースはほぼ浮遊電位相当で薄い
+        assert max(sw["s_cl_ground_mm"]) < min(sw["s_cl_powered_mm"])
+
     def test_approximation_xsec(self, waveform_csv_text):
         config = default_config(waveform_csv_text)
         config.gas.cross_section_source = "approximation"
